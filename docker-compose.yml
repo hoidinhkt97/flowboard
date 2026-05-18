@@ -1,0 +1,23 @@
+services:
+  agent:
+    build:
+      context: ./agent
+    environment:
+      FLOWBOARD_STORAGE: /app/storage
+      FLOWBOARD_WS_HOST: "0.0.0.0"
+    volumes:
+      - ./data/storage:/app/storage
+      - ./data/codex:/root/.codex
+    ports:
+      - "8101:8101"
+      - "127.0.0.1:9223:9223"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - agent
+    restart: unless-stopped

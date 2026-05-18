@@ -18,10 +18,13 @@ from flowboard.worker.processor import get_worker
 # Guard rail: the dedicated WS server is unauthenticated and would expose the
 # callback secret to any process that can reach it. Refuse to boot if someone
 # overrode WS_HOST to a non-loopback address.
-if WS_HOST not in ("127.0.0.1", "localhost", "::1"):
+# 0.0.0.0 is allowed for Docker: the container binds all interfaces, but
+# docker-compose exposes the port only on 127.0.0.1 on the host side
+# (ports: "127.0.0.1:9222:9222"), keeping network exposure equivalent to loopback.
+if WS_HOST not in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
     raise RuntimeError(
-        f"FLOWBOARD_WS_HOST must be loopback (got {WS_HOST!r}); the extension WS "
-        "is unauthenticated by design and must not be network-reachable."
+        f"FLOWBOARD_WS_HOST must be loopback or 0.0.0.0 (got {WS_HOST!r}); "
+        "the extension WS is unauthenticated by design and must not be network-reachable."
     )
 
 logger = logging.getLogger(__name__)

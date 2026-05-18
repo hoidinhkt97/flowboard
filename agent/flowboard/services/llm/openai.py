@@ -235,11 +235,14 @@ class OpenAIProvider:
         attachments: Optional[list[str]],
         timeout: float,
     ) -> str:
-        """Spawn `codex exec --output-format json -p <prompt>` and parse
-        the JSON envelope (similar shape to `claude` CLI)."""
+        """Spawn `codex exec --skip-git-repo-check <prompt>` and return plain-text stdout.
+
+        --output-format was removed in newer Codex CLI versions; output is plain text.
+        System prompt is prepended inline since Codex CLI has no --system flag.
+        --skip-git-repo-check is required when running outside a git repo (e.g. Docker).
+        """
         import os
 
-        # Validate inputs
         try:
             validate_prompt_size(user_prompt)
             if system_prompt:
@@ -248,17 +251,11 @@ class OpenAIProvider:
         except ValueError as exc:
             raise LLMError(f"Invalid input: {exc}") from exc
 
+        # Codex CLI has no --system flag; prepend inline.
+        full_prompt = f"{system_prompt}\n\n{user_prompt}" if system_prompt else user_prompt
+
         codex_bin = resolve_cli_binary(_CLI_BIN, CLI_PROBE_TIMEOUT)
-        # Pipe the prompt via stdin (`-` sentinel) instead of as an argv
-        # token. Same Windows ``.cmd`` shim rationale as claude_cli.py:
-        # cmd.exe re-parses argv for ``.cmd``-shimmed binaries and
-        # mangles newlines / quotes in long prompts. Stdin sidesteps the
-        # parser entirely.
-        args: list[str] = [
-            codex_bin, "exec", "--output-format", "json", "-p", "-",
-        ]
-        if system_prompt:
-            args += ["--system", system_prompt]
+        args: list[str] = [codex_bin, "exec", "--skip-git-repo-check", full_prompt]
         if attachments and self._cli_image_flag:
             for path in attachments:
                 args += [self._cli_image_flag, os.path.abspath(path)]
@@ -266,7 +263,7 @@ class OpenAIProvider:
         try:
             result = subprocess.run(
                 args,
-                input=user_prompt.encode("utf-8"),
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=timeout,
             )
@@ -281,30 +278,27 @@ class OpenAIProvider:
             stderr = result.stderr.decode(errors="replace")[:400]
             raise LLMError(f"codex CLI exited {result.returncode}: {stderr}")
 
-        stdout = result.stdout.decode(errors="replace")
+        stdout = result.stdout.decode(errors="replace").strip()
+
+        # Opportunistically try JSON in case a future version re-adds it.
         try:
             envelope = json.loads(stdout)
-        except json.JSONDecodeError as exc:
-            raise LLMError(
-                f"codex CLI returned non-JSON output: {stdout[:200]}"
-            ) from exc
+            if isinstance(envelope, dict):
+                if envelope.get("is_error") or envelope.get("error"):
+                    raise LLMError(
+                        f"codex CLI reported error: "
+                        f"{envelope.get('error') or envelope.get('result') or 'unknown'}"
+                    )
+                for key in ("result", "output_text", "text"):
+                    val = envelope.get(key)
+                    if isinstance(val, str):
+                        return val
+        except json.JSONDecodeError:
+            pass  # plain-text output — expected for current Codex CLI versions
 
-        if not isinstance(envelope, dict):
-            raise LLMError("codex CLI envelope is not an object")
-
-        # Codex envelope shape mirrors Claude CLI: {result: "..."} or
-        # {is_error: true, ...}. Tolerate both `result` and `output_text`
-        # since the exact field name has shifted across CLI versions.
-        if envelope.get("is_error") or envelope.get("error"):
-            raise LLMError(
-                f"codex CLI reported error: "
-                f"{envelope.get('error') or envelope.get('result') or 'unknown'}"
-            )
-        for key in ("result", "output_text", "text"):
-            val = envelope.get(key)
-            if isinstance(val, str):
-                return val
-        raise LLMError(f"codex CLI envelope missing string output: {envelope!r:.200}")
+        if not stdout:
+            raise LLMError("codex CLI returned empty output")
+        return stdout
 
     # ── API dispatch ─────────────────────────────────────────────────
 

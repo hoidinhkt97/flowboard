@@ -190,9 +190,11 @@ async def _ingest_image_bytes(
         file_name=file_name,
     )
     if resp.get("error"):
+        err = resp["error"]
+        status = 503 if err == "extension_disconnected" else 502
         raise HTTPException(
-            status_code=502,
-            detail={"message": resp["error"], "raw": resp.get("raw")},
+            status_code=status,
+            detail={"message": err, "raw": resp.get("raw")},
         )
     media_id = resp.get("media_id")
     if not isinstance(media_id, str) or not media_service.is_valid_media_id(media_id):
