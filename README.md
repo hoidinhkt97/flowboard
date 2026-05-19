@@ -442,6 +442,51 @@ empty. Add a Character node, generate it, drop a Visual asset, drop an
 Image, wire them up, click **▶ Generate** — the full demo above is
 about 15 minutes of clicking.
 
+### Docker (alternative)
+
+If you prefer containers over a local Python / Node setup, use the
+included `docker-compose.yml` — it builds and runs both the **agent**
+and **frontend** in one command:
+
+```bash
+git clone https://github.com/<your-fork>/flowboard.git
+cd flowboard
+
+# Build & start (first run pulls base images + installs deps — grab a ☕)
+docker compose up --build -d
+
+# Verify
+curl http://127.0.0.1:8101/api/health   # agent health-check
+open http://localhost:3000               # frontend (proxied through nginx)
+```
+
+| Service | Container port | Host port | Notes |
+|---------|---------------|-----------|-------|
+| **agent** | 8101 | `8101` | FastAPI + worker queue |
+| **agent** (WS) | 9223 | `127.0.0.1:9223` | Extension WebSocket (loopback only) |
+| **frontend** | 80 | `3000` | Nginx serves the built React app and proxies `/api/` + `/media/` to the agent |
+
+Data is persisted in `./data/storage` (SQLite + media cache) via a bind
+mount, so containers can be rebuilt without losing boards.
+
+```bash
+# Stop
+docker compose down
+
+# Rebuild after a code change
+docker compose up --build -d
+
+# Tail logs
+docker compose logs -f
+```
+
+> **Note:** The Chrome extension still needs to run in your **host**
+> browser — it cannot run inside a container. Follow
+> [Step 1](#step-1--load-the-chrome-extension) as usual, then load
+> `https://labs.google/fx/tools/flow` in the same browser.
+> The extension connects to the agent's WebSocket on
+> `127.0.0.1:9223`, which Docker maps to the host.
+
 ### Run tests
 
 ```bash
