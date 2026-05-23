@@ -1,0 +1,22 @@
+{
+  "name": "flowboard-desktop",
+  "version": "1.2.20",
+  "description": "Flowboard desktop wrapper (Electron)",
+  "main": "dist/main.js",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "dev": "cross-env FLOWBOARD_DEV=1 npm run build && electron .",
+    "start": "electron .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "cross-env": "^7.0.3",
+    "electron": "^32.0.0",
+    "electron-builder": "^25.0.0",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.0"
+  }
+}
