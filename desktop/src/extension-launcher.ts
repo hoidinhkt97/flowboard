@@ -233,13 +233,10 @@ export function launchChromeWithExtension(): void {
   log('INFO', `Chrome already running: ${chromeRunning}`);
 
   if (chromeRunning) {
-    // Chrome is running → --load-extension is ignored by existing instance.
-    // Just open the Flow tab so the already-installed extension can connect.
-    log('INFO', 'Chrome already open — opening Flow tab (extension must already be installed)');
-    log('INFO', `Navigating to ${FLOW_URL}`);
-    const child = spawn(chromePath, [FLOW_URL], { detached: true, stdio: 'ignore' });
-    child.on('error', (err) => log('ERROR', `Chrome open-tab error: ${err.message}`));
-    child.unref();
+    // Chrome already open — don't spawn another instance. The user
+    // can navigate to the Flow tab themselves; the existing extension
+    // (if installed) will connect when they do.
+    log('INFO', 'Chrome already running — skipping launch (extension will connect when user visits Flow tab)');
   } else {
     // Chrome not running → safe to modify Preferences and use --load-extension.
     log('INFO', 'Step 1: Copying extension to user-writable location');
