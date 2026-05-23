@@ -1,0 +1,48 @@
+appId: ai.flowboard.desktop
+productName: Flowboard
+copyright: Copyright © 2026 Flowboard
+directories:
+  output: release
+  buildResources: assets
+
+files:
+  - dist/**/*
+  - assets/**/*
+  - package.json
+  - "!**/*.test.*"
+  - "!**/*.map"
+
+extraResources:
+  - from: "../frontend/dist"
+    to: "frontend"
+    filter: ["**/*"]
+  - from: "../agent/dist/flowboard-agent"
+    to: "agent"
+    filter: ["**/*"]
+
+asar: true
+asarUnpack: []
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: assets/icon.png
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: "Flowboard-Setup-${version}.${ext}"
+
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  icon: assets/icon.png
+  identity: null
+  category: public.app-category.graphics-design
+  artifactName: "Flowboard-${version}-${arch}.${ext}"
+
+dmg:
+  title: "Flowboard ${version}"
