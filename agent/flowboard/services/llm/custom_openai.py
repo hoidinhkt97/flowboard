@@ -1,5 +1,15 @@
 """Custom OpenAI-compatible provider.
 
+Robust response parsing handles three real-world cases:
+  1. Standard JSON body — `resp.json()` works directly
+  2. Streaming/SSE body (some proxies return `data: {...}` lines
+     even when stream=false) — we collect content from SSE chunks
+  3. Wrong Content-Type but valid JSON body — fall back to
+     `json.loads(resp.text)` so we don't trip on header quirks
+
+Also explicitly sets `stream: false` in the payload to nudge servers
+that default to streaming when the flag is absent.
+
 Lets users plug Flowboard into any OpenAI-compatible endpoint:
 - Self-hosted models via LM Studio / Ollama / vLLM / TGI
 - API gateways: OpenRouter, Together.ai, Groq, Fireworks, DeepInfra
@@ -20,6 +30,7 @@ remote server — surfaced as LLMError so it lands in the Settings test row.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import mimetypes
 import time
@@ -117,7 +128,8 @@ class CustomOpenAIProvider:
             messages.append({"role": "user", "content": user_prompt})
 
         endpoint = base_url.rstrip("/") + "/chat/completions"
-        payload = {"model": chosen_model, "messages": messages}
+        # stream=false explicitly — some proxies default to streaming
+        payload = {"model": chosen_model, "messages": messages, "stream": False}
 
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -139,25 +151,75 @@ class CustomOpenAIProvider:
                 f"HTTP {resp.status_code} from {endpoint}: {_safe_error_message(resp)}"
             )
 
-        try:
-            data = resp.json()
-        except ValueError as exc:
-            body_snippet = resp.text[:200].replace("\n", " ")
+        content = _extract_content(resp, endpoint)
+        if not content:
             raise LLMError(
-                f"Endpoint returned non-JSON (URL: {endpoint}). "
-                f"Check that the URL ends at /v1 and points to an OpenAI-compatible "
-                f"chat completions API. Response: {body_snippet!r}"
-            ) from exc
+                f"Empty content from {endpoint}. Body: {resp.text[:300]!r}"
+            )
+        return content
+
+
+# ── helpers ────────────────────────────────────────────────────────────
+
+def _extract_content(resp: httpx.Response, endpoint: str) -> str:
+    """Extract chat-completion content from the response.
+
+    Tries in order:
+      1. Standard `resp.json()` (most servers)
+      2. `json.loads(resp.text)` (servers with wrong Content-Type)
+      3. SSE/streaming parse — concatenate `data: {...}` chunks (some
+         proxies return SSE even when stream=false in the request)
+    """
+    # Try 1 + 2: plain JSON
+    data = None
+    for parser in (resp.json, lambda: json.loads(resp.text)):
+        try:
+            data = parser()
+            break
+        except (ValueError, json.JSONDecodeError):
+            data = None
+
+    if isinstance(data, dict):
         try:
             return data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMError(
-                f"Response missing 'choices[0].message.content' field. "
-                f"Body: {str(data)[:300]}"
+                f"Response missing choices[0].message.content. Body: {str(data)[:300]}"
             ) from exc
 
+    # Try 3: SSE streaming response
+    text = resp.text or ""
+    if "data:" in text:
+        parts: list[str] = []
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line.startswith("data:"):
+                continue
+            chunk = line[len("data:"):].strip()
+            if chunk == "[DONE]" or not chunk:
+                continue
+            try:
+                obj = json.loads(chunk)
+            except json.JSONDecodeError:
+                continue
+            try:
+                delta = obj["choices"][0].get("delta") or {}
+                msg = obj["choices"][0].get("message") or {}
+                piece = delta.get("content") or msg.get("content") or ""
+                if isinstance(piece, str):
+                    parts.append(piece)
+            except (KeyError, IndexError, TypeError):
+                continue
+        if parts:
+            return "".join(parts)
 
-# ── helpers ────────────────────────────────────────────────────────────
+    body_snippet = text[:300].replace("\n", " ")
+    raise LLMError(
+        f"Could not parse response from {endpoint}. "
+        f"Expected OpenAI chat completion JSON or SSE stream. "
+        f"Body: {body_snippet!r}"
+    )
+
 
 def _image_url_block(path: str) -> dict:
     p = Path(path)
