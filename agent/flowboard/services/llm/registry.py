@@ -16,6 +16,7 @@ from typing import Literal, Optional
 
 from .base import LLMError, LLMProvider
 from .claude import ClaudeProvider
+from .custom_openai import CustomOpenAIProvider
 from .gemini import GeminiProvider
 from .openai import OpenAIProvider
 from . import secrets
@@ -33,6 +34,7 @@ _PROVIDERS: dict[str, LLMProvider] = {
     "claude": ClaudeProvider(),
     "gemini": GeminiProvider(),
     "openai": OpenAIProvider(),
+    "custom_openai": CustomOpenAIProvider(),
 }
 
 

@@ -267,6 +267,8 @@ function titleFor(p: LLMProviderName): string {
       return "🤖 Gemini CLI Setup";
     case "openai":
       return "🤖 OpenAI Setup";
+    case "custom_openai":
+      return "🤖 Custom OpenAI Setup";
   }
 }
 
@@ -278,6 +280,8 @@ function labelFor(p: LLMProviderName): string {
       return "Google Gemini";
     case "openai":
       return "OpenAI";
+    case "custom_openai":
+      return "Custom OpenAI";
   }
 }
 
@@ -289,5 +293,7 @@ function docsLinkFor(p: LLMProviderName): string {
       return "https://github.com/google/gemini-cli";
     case "openai":
       return "https://platform.openai.com/docs/quickstart";
+    case "custom_openai":
+      return "https://platform.openai.com/docs/api-reference/chat";
   }
 }

@@ -44,12 +44,14 @@ def test_list_providers_returns_all_three(client, tmp_secrets_path):
         registry._PROVIDERS["gemini"], "is_available", return_value=False
     ), patch.object(
         registry._PROVIDERS["openai"], "is_available", return_value=False
+    ), patch.object(
+        registry._PROVIDERS["custom_openai"], "is_available", return_value=False
     ):
         resp = client.get("/api/llm/providers")
     assert resp.status_code == 200
     by_name = {p["name"]: p for p in resp.json()}
-    assert set(by_name) == {"claude", "gemini", "openai"}
-    for name in ("claude", "gemini", "openai"):
+    assert set(by_name) == {"claude", "gemini", "openai", "custom_openai"}
+    for name in ("claude", "gemini", "openai", "custom_openai"):
         entry = by_name[name]
         assert "available" in entry
         assert "configured" in entry
@@ -61,12 +63,14 @@ def test_list_providers_returns_all_three(client, tmp_secrets_path):
 def test_list_providers_no_provider_requires_key_by_default(
     client, tmp_secrets_path
 ):
-    """All three shipped providers are CLI-first. OpenAI has an API
-    fallback but its `requiresKey=false` means the CLI path is enough on
-    its own — no provider forces the user to enter a key."""
+    """CLI-first providers (claude, gemini, openai) have requiresKey=False.
+    custom_openai is REST-only and requires both URL + API key."""
     resp = client.get("/api/llm/providers")
     for entry in resp.json():
-        assert entry["requiresKey"] is False
+        if entry["name"] == "custom_openai":
+            assert entry["requiresKey"] is True
+        else:
+            assert entry["requiresKey"] is False
 
 
 def test_list_providers_does_not_leak_api_keys(client, tmp_secrets_path):

@@ -575,7 +575,7 @@ export async function uploadImageFromUrl(
 // See .omc/plans/multi-llm-provider-legacy.md → UI Specification → Frontend ↔
 // backend contract for the full shape.
 
-export type LLMProviderName = "claude" | "gemini" | "openai";
+export type LLMProviderName = "claude" | "gemini" | "openai" | "custom_openai";
 export type LLMFeature = "auto_prompt" | "vision" | "planner";
 export type LLMProviderMode = "cli" | "api" | "none";
 export type LLMLastError =
@@ -594,6 +594,10 @@ export interface LLMProviderInfo {
   mode: LLMProviderMode;
   lastError?: LLMLastError;
   lastTest?: { ok: boolean; latencyMs?: number; error?: string };
+  // Only present for custom_openai — surfaces URL + model id so the
+  // Settings form can pre-fill its inputs. API key is never echoed.
+  url?: string;
+  model?: string;
 }
 
 export interface LLMConfig {
@@ -654,6 +658,20 @@ export interface LlmTestResult {
   ok: boolean;
   latencyMs?: number;
   error?: string;
+}
+
+export async function setLlmCustomOpenAIConfig(
+  config: { url?: string; model?: string },
+): Promise<{ ok: boolean }> {
+  // Save URL + model id for the Custom OpenAI provider. Empty string
+  // clears the field. The API key uses setLlmApiKey("custom_openai", ...).
+  const res = await fetch("/api/llm/providers/custom_openai/config", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res));
+  return res.json();
 }
 
 export async function testLlmProvider(

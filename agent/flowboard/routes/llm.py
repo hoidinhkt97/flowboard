@@ -47,10 +47,16 @@ class _ConfigBody(BaseModel):
     planner: Optional[str] = None
 
 
+class _CustomOpenAIConfigBody(BaseModel):
+    """PUT /api/llm/providers/custom_openai/config: URL + model id."""
+    url: Optional[str] = None
+    model: Optional[str] = None
+
+
 # Whitelist for the writable feature → provider mapping. Hand-edited
 # secrets.json with garbage values is tolerated by `read_active_providers`,
 # but the HTTP surface must reject input that wouldn't route anywhere.
-_VALID_PROVIDER_NAMES = {"claude", "gemini", "openai"}
+_VALID_PROVIDER_NAMES = {"claude", "gemini", "openai", "custom_openai"}
 _VALID_FEATURES = ("auto_prompt", "vision", "planner")
 
 
@@ -89,10 +95,23 @@ async def list_providers() -> list[dict]:
                 or getattr(provider, "_cli_available", False)
             )
             requires_key = False  # CLI path doesn't require it
+            extra: dict = {}
+        elif provider.name == "custom_openai":
+            mode = "api"
+            cfg = secrets.get_provider_config("custom_openai")
+            configured = bool(secrets.get_api_key("custom_openai")) and bool(cfg.get("url"))
+            requires_key = True
+            # Expose URL + model so the Settings form can pre-fill its inputs.
+            # API key is never echoed.
+            extra = {
+                "url": cfg.get("url") or "",
+                "model": cfg.get("model") or "",
+            }
         else:
             mode = "cli"
             configured = available
             requires_key = False
+            extra = {}
 
         out.append({
             "name": provider.name,
@@ -101,6 +120,7 @@ async def list_providers() -> list[dict]:
             "configured": configured,
             "requiresKey": requires_key,
             "mode": mode,
+            **extra,
         })
     return out
 
@@ -118,7 +138,7 @@ async def set_provider_key(name: str, body: _ApiKeyBody) -> dict:
     """
     if name not in _VALID_PROVIDER_NAMES:
         raise HTTPException(status_code=404, detail=f"unknown provider {name!r}")
-    if name != "openai":
+    if name not in ("openai", "custom_openai"):
         raise HTTPException(
             status_code=400,
             detail=f"{name} doesn't accept API keys; uses CLI auth instead",
@@ -130,6 +150,39 @@ async def set_provider_key(name: str, body: _ApiKeyBody) -> dict:
     if provider is not None and hasattr(provider, "reset_cache"):
         provider.reset_cache()
     logger.info("llm: api key %s for %s", "set" if body.apiKey else "cleared", name)
+    return {"ok": True}
+
+
+# ── PUT /api/llm/providers/custom_openai/config ───────────────────────
+
+
+@router.put("/providers/custom_openai/config")
+async def set_custom_openai_config(body: _CustomOpenAIConfigBody) -> dict:
+    """Save URL + model id for the Custom OpenAI provider.
+
+    Both fields are optional in the body — sending only one updates that
+    field; sending both replaces both; sending an empty string clears
+    the field. The API key uses the existing PUT /providers/custom_openai
+    endpoint (so it shares the no-echo guarantee with the OpenAI key).
+    """
+    current = secrets.get_provider_config("custom_openai") or {}
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="no fields to update")
+
+    next_cfg = dict(current)
+    for k, v in updates.items():
+        if v == "":
+            next_cfg.pop(k, None)
+        else:
+            next_cfg[k] = v
+
+    secrets.set_provider_config("custom_openai", next_cfg)
+    # Bust availability cache
+    provider = registry.get_provider("custom_openai")
+    if provider is not None and hasattr(provider, "reset_cache"):
+        provider.reset_cache()
+    logger.info("llm: custom_openai config updated keys=%s", list(updates.keys()))
     return {"ok": True}
 
 

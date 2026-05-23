@@ -99,6 +99,30 @@ def set_api_key(provider: str, key: Optional[str]) -> None:
     write(doc)
 
 
+# ── Provider config helpers (URL, model, etc. for custom providers) ───
+
+def get_provider_config(provider: str) -> dict:
+    """Return arbitrary config dict for a provider (URL, model, etc.).
+    Used by custom_openai to store endpoint URL + model id.
+    Returns empty dict if no config saved."""
+    doc = read()
+    cfgs = doc.get("providerConfig") or {}
+    cfg = cfgs.get(provider) if isinstance(cfgs, dict) else None
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def set_provider_config(provider: str, config: dict) -> None:
+    """Replace provider config dict. Pass {} to clear."""
+    doc = read()
+    cfgs = dict(doc.get("providerConfig") or {})
+    if not config:
+        cfgs.pop(provider, None)
+    else:
+        cfgs[provider] = config
+    doc["providerConfig"] = cfgs
+    write(doc)
+
+
 # ── Active-providers helpers ───────────────────────────────────────────
 
 # Features the UI configures. Order matters only for display; iteration

@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getLlmConfig,
   getLlmProviders,
+  setLlmApiKey,
   setLlmConfig,
+  setLlmCustomOpenAIConfig,
   testLlmProvider,
   type LLMConfig,
   type LLMProviderInfo,
@@ -43,7 +45,7 @@ import { ProviderSetupModal } from "./ProviderSetupModal";
 const REFRESH_INTERVAL_MS = 30_000;
 // Order matters — this is the left-to-right card order in the dialog.
 // Gemini first (Google's most popular CLI), Claude middle, OpenAI Codex last.
-const SHOWN_PROVIDERS: LLMProviderName[] = ["gemini", "claude", "openai"];
+const SHOWN_PROVIDERS: LLMProviderName[] = ["gemini", "claude", "openai", "custom_openai"];
 // First-run default selection. Gemini wins because it's free for personal
 // use, has the lowest CLI install friction, and (on a configured machine)
 // passes the test gate fastest. The user can still click any other card —
@@ -71,6 +73,11 @@ const CLI_REFERENCE: Record<
     installCmd: "npm install -g @openai/codex",
     docsUrl: "https://github.com/openai/codex",
     docsLabel: "Codex CLI repo",
+  },
+  custom_openai: {
+    installCmd: "",
+    docsUrl: "https://platform.openai.com/docs/api-reference/chat",
+    docsLabel: "OpenAI chat API reference",
   },
 };
 type TestState = "untested" | "testing" | "ok" | "fail";
@@ -253,6 +260,7 @@ export function AiProvidersSection() {
     claude: providers!.find((p) => p.name === "claude"),
     gemini: providers!.find((p) => p.name === "gemini"),
     openai: providers!.find((p) => p.name === "openai"),
+    custom_openai: providers!.find((p) => p.name === "custom_openai"),
   };
 
   const pendingProvider = pending ? byName[pending] : null;
@@ -306,7 +314,14 @@ export function AiProvidersSection() {
 
       {pending && pendingProvider && (
         <div className="selection-panel">
-          {!ready ? (
+          {pending === "custom_openai" ? (
+            // Custom provider always shows the form (whether configured or not)
+            // so the user can edit URL / API key / model in place.
+            <CustomOpenAIForm
+              info={pendingProvider}
+              onSaved={() => void refresh()}
+            />
+          ) : !ready ? (
             // Setup-needed branch: surface install/auth guidance before
             // letting the user attempt to test or apply.
             <div className="selection-panel__setup">
@@ -504,6 +519,162 @@ function CliReference({ provider }: CliReferenceProps) {
   );
 }
 
+/**
+ * Form for the Custom OpenAI provider: URL + API key + model id.
+ * Saves on click. After save, refresh() reloads /providers so the
+ * card shows "Connected" state.
+ */
+interface CustomOpenAIFormProps {
+  info: LLMProviderInfo;
+  onSaved: () => void;
+}
+
+function CustomOpenAIForm({ info, onSaved }: CustomOpenAIFormProps) {
+  const [url, setUrl] = useState<string>(info.url ?? "");
+  const [apiKey, setApiKey] = useState<string>("");
+  const [model, setModel] = useState<string>(info.model ?? "");
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  async function handleSave() {
+    if (saving) return;
+    setSaving(true);
+    setStatus(null);
+    try {
+      await setLlmCustomOpenAIConfig({ url: url.trim(), model: model.trim() });
+      if (apiKey.trim()) {
+        await setLlmApiKey("custom_openai", apiKey.trim());
+      }
+      setStatus("Đã lưu cấu hình.");
+      setApiKey(""); // clear input after save — never echo it back
+      onSaved();
+    } catch (err) {
+      setStatus(`Lỗi: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="custom-provider-form">
+      <div className="selection-panel__heading">Custom OpenAI-compatible Endpoint</div>
+      <div className="selection-panel__setup-text">
+        Bất kỳ endpoint OpenAI-compatible nào: OpenRouter, Together.ai, Groq,
+        LM Studio, Ollama, Azure OpenAI, vLLM, ...
+      </div>
+
+      <label className="custom-provider-form__row">
+        <span className="custom-provider-form__label">Base URL</span>
+        <input
+          type="text"
+          className="custom-provider-form__input"
+          placeholder="https://api.openrouter.ai/v1"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+        />
+      </label>
+
+      <label className="custom-provider-form__row">
+        <span className="custom-provider-form__label">API Key</span>
+        <input
+          type="password"
+          className="custom-provider-form__input"
+          placeholder={info.configured ? "•••••••• (đã lưu — để trống nếu giữ nguyên)" : "sk-..."}
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          autoComplete="off"
+        />
+      </label>
+
+      <label className="custom-provider-form__row">
+        <span className="custom-provider-form__label">Model</span>
+        <input
+          type="text"
+          className="custom-provider-form__input"
+          placeholder="gpt-4o-mini"
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+        />
+      </label>
+
+      <div className="selection-panel__actions">
+        <button
+          type="button"
+          className="selection-panel__apply-btn"
+          onClick={handleSave}
+          disabled={saving || !url.trim()}
+        >
+          {saving ? "Đang lưu…" : "Lưu cấu hình"}
+        </button>
+      </div>
+
+      {status && (
+        <div className="custom-provider-form__status">{status}</div>
+      )}
+
+      {info.configured && (
+        <div className="selection-panel__setup-text" style={{ marginTop: 12 }}>
+          ✓ Đã cấu hình. Bấm <strong>Test</strong> ở dưới để kiểm tra kết nối,
+          sau đó <strong>Apply</strong> để dùng provider này.
+        </div>
+      )}
+
+      {info.configured && (
+        <>
+          <ConnectionTestRowForCustom info={info} />
+          <ApplyButtonForCustom name="custom_openai" onSaved={onSaved} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function ConnectionTestRowForCustom({ info: _info }: { info: LLMProviderInfo }) {
+  const [test, setTest] = useState<ConnectionTestResult>(INITIAL_TEST);
+  async function runTest() {
+    setTest({ state: "testing" });
+    const result = await testLlmProvider("custom_openai");
+    setTest(
+      result.ok
+        ? { state: "ok", latencyMs: result.latencyMs }
+        : { state: "fail", error: result.error || "test failed" },
+    );
+  }
+  return (
+    <ConnectionTestRow
+      providerLabel="Custom OpenAI"
+      result={test}
+      onTest={runTest}
+    />
+  );
+}
+
+function ApplyButtonForCustom({ name, onSaved }: { name: LLMProviderName; onSaved: () => void }) {
+  const [applying, setApplying] = useState(false);
+  async function handleApply() {
+    setApplying(true);
+    try {
+      await setLlmConfig({ auto_prompt: name, vision: name, planner: name });
+      window.dispatchEvent(new CustomEvent("flowboard:llm-config-changed"));
+      onSaved();
+    } finally {
+      setApplying(false);
+    }
+  }
+  return (
+    <div className="selection-panel__actions">
+      <button
+        type="button"
+        className="selection-panel__apply-btn"
+        onClick={handleApply}
+        disabled={applying}
+      >
+        {applying ? "Đang áp dụng…" : "Apply changes"}
+      </button>
+    </div>
+  );
+}
+
 function labelOf(name: LLMProviderName): string {
   switch (name) {
     case "claude":
@@ -512,5 +683,7 @@ function labelOf(name: LLMProviderName): string {
       return "Gemini";
     case "openai":
       return "OpenAI";
+    case "custom_openai":
+      return "Custom OpenAI";
   }
 }
