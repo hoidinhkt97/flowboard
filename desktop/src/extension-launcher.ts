@@ -256,11 +256,15 @@ export function launchChromeWithExtension(): void {
     log('INFO', `Step 4: Spawning Chrome with --load-extension=${writableExtensionDir}`);
     log('INFO', `Step 5: Navigating to ${FLOW_URL}`);
 
+    // Chrome 137+ disables --load-extension by default. The
+    // DisableLoadExtensionCommandLineSwitch feature must be turned off
+    // for --load-extension to take effect.
     const child = spawn(
       chromePath,
       [
         `--profile-directory=${profileDir}`,
         `--load-extension=${writableExtensionDir}`,
+        '--disable-features=DisableLoadExtensionCommandLineSwitch',
         '--no-first-run',
         '--no-default-browser-check',
         FLOW_URL,
