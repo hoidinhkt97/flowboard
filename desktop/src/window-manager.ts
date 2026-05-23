@@ -23,7 +23,11 @@ export function createMainWindow(url: string): BrowserWindow {
     width: 1280,
     height: 800,
     show: false,
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(__dirname, 'preload.js'),
+    },
   });
   mainWindow.loadURL(url);
   mainWindow.once('ready-to-show', () => mainWindow?.show());

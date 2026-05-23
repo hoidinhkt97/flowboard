@@ -113,6 +113,9 @@ export function AccountPanel({ collapsed = false }: { collapsed?: boolean }) {
       const res = await scanExtension();
       if (!res.extension_connected) {
         setScanState("no-extension");
+        // In Electron desktop app: auto-launch Chrome with extension installed
+        (window as unknown as { flowboardDesktop?: { launchChrome: () => void } })
+          .flowboardDesktop?.launchChrome();
         // Auto-clear the warning after 8s so the button doesn't get
         // stuck — gives the user time to read it but recovers on its own.
         setTimeout(() => setScanState("idle"), 8000);

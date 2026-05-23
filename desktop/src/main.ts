@@ -1,11 +1,11 @@
-import { app, BrowserWindow, dialog, Menu } from 'electron';
+import { app, BrowserWindow, dialog, Menu, ipcMain } from 'electron';
 import * as path from 'path';
 import { AgentManager } from './agent-manager';
 import { resolveAgentBinaryPath } from './paths';
 import { readLogTail } from './log-tail';
 import { createSplashWindow, createMainWindow, closeSplash } from './window-manager';
 import { buildMenu } from './menu';
-import { ensureExtensionConnected } from './extension-launcher';
+import { ensureExtensionConnected, launchChromeWithExtension } from './extension-launcher';
 
 const isDev = process.env.FLOWBOARD_DEV === '1';
 const agentManager = new AgentManager();
@@ -110,6 +110,11 @@ async function startup(): Promise<void> {
   // Auto-launch Chrome with extension if not already connected (fire-and-forget)
   void ensureExtensionConnected(httpPort);
 }
+
+// IPC: frontend can trigger Chrome launch (e.g. from Scan extension button)
+ipcMain.handle('launch-chrome', () => {
+  launchChromeWithExtension();
+});
 
 app.whenReady().then(startup);
 
