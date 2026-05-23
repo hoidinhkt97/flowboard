@@ -122,6 +122,24 @@ function findChrome(): string | null {
   return null;
 }
 
+/** Check if Chrome is currently running (Windows/macOS). */
+function isChromeRunning(): boolean {
+  try {
+    const { execSync } = require('child_process') as typeof import('child_process');
+    if (process.platform === 'win32') {
+      const out = execSync('tasklist /FI "IMAGENAME eq chrome.exe" /NH', { encoding: 'utf-8' });
+      return out.toLowerCase().includes('chrome.exe');
+    }
+    if (process.platform === 'darwin') {
+      const out = execSync('pgrep -x "Google Chrome"', { encoding: 'utf-8' });
+      return out.trim().length > 0;
+    }
+  } catch {
+    // pgrep returns exit code 1 when no process found — treat as not running
+  }
+  return false;
+}
+
 export function resolveExtensionDir(): string {
   if (app.isPackaged) {
     return path.join(process.resourcesPath, 'extension');
@@ -184,26 +202,39 @@ export function launchChromeWithExtension(): void {
     return;
   }
 
-  log('INFO', 'Step 1: Enabling Chrome developer mode');
-  enableChromeDeveloperMode();
+  const chromeRunning = isChromeRunning();
+  log('INFO', `Chrome already running: ${chromeRunning}`);
 
-  log('INFO', `Step 2: Spawning Chrome with --load-extension=${extensionDir}`);
-  log('INFO', `Step 3: Navigating to ${FLOW_URL}`);
+  if (chromeRunning) {
+    // Chrome is running → --load-extension is ignored by existing instance.
+    // Just open the Flow tab so the already-installed extension can connect.
+    log('INFO', 'Chrome already open — opening Flow tab (extension must already be installed)');
+    log('INFO', `Navigating to ${FLOW_URL}`);
+    const child = spawn(chromePath, [FLOW_URL], { detached: true, stdio: 'ignore' });
+    child.on('error', (err) => log('ERROR', `Chrome open-tab error: ${err.message}`));
+    child.unref();
+  } else {
+    // Chrome not running → safe to modify Preferences and use --load-extension.
+    log('INFO', 'Step 1: Enabling Chrome developer mode');
+    enableChromeDeveloperMode();
 
-  const child = spawn(
-    chromePath,
-    [
-      `--load-extension=${extensionDir}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      FLOW_URL,
-    ],
-    { detached: true, stdio: 'ignore' }
-  );
-  child.on('error', (err) => log('ERROR', `Chrome spawn error: ${err.message}`));
-  child.unref();
+    log('INFO', `Step 2: Spawning Chrome with --load-extension=${extensionDir}`);
+    log('INFO', `Step 3: Navigating to ${FLOW_URL}`);
 
-  log('INFO', 'Chrome spawned — waiting for extension to connect');
+    const child = spawn(
+      chromePath,
+      [
+        `--load-extension=${extensionDir}`,
+        '--no-first-run',
+        '--no-default-browser-check',
+        FLOW_URL,
+      ],
+      { detached: true, stdio: 'ignore' }
+    );
+    child.on('error', (err) => log('ERROR', `Chrome spawn error: ${err.message}`));
+    child.unref();
+    log('INFO', 'Chrome spawned with extension — waiting for extension to connect');
+  }
 }
 
 /**
