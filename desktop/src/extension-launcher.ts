@@ -37,54 +37,82 @@ const CHROME_PATHS: Record<string, string[]> = {
   ],
 };
 
-// Chrome Preferences file path per platform
-function getChromePreferencesPath(): string | null {
+// Chrome User Data directory per platform
+function getChromeUserDataDir(): string | null {
   if (process.platform === 'win32') {
-    const base = process.env.LOCALAPPDATA ?? '';
-    return path.join(base, 'Google', 'Chrome', 'User Data', 'Default', 'Preferences');
+    return path.join(process.env.LOCALAPPDATA ?? '', 'Google', 'Chrome', 'User Data');
   }
   if (process.platform === 'darwin') {
-    return path.join(
-      process.env.HOME ?? '',
-      'Library', 'Application Support', 'Google', 'Chrome', 'Default', 'Preferences'
-    );
+    return path.join(process.env.HOME ?? '', 'Library', 'Application Support', 'Google', 'Chrome');
   }
   if (process.platform === 'linux') {
-    return path.join(process.env.HOME ?? '', '.config', 'google-chrome', 'Default', 'Preferences');
+    return path.join(process.env.HOME ?? '', '.config', 'google-chrome');
   }
   return null;
 }
 
 /**
- * Enable Chrome Developer Mode in the Default profile Preferences file.
+ * Find all Chrome profile Preferences files (Default + Profile 1, Profile 2, ...).
+ * Returns list of existing paths + the Default path (even if it doesn't exist yet).
+ */
+function findChromeProfilePaths(userDataDir: string): { existing: string[]; defaultPath: string } {
+  const defaultPath = path.join(userDataDir, 'Default', 'Preferences');
+  const existing: string[] = [];
+
+  if (!fs.existsSync(userDataDir)) return { existing, defaultPath };
+
+  const profileDirs = ['Default', ...fs.readdirSync(userDataDir).filter((d) => /^Profile \d+$/.test(d))];
+  for (const dir of profileDirs) {
+    const p = path.join(userDataDir, dir, 'Preferences');
+    if (fs.existsSync(p)) {
+      existing.push(p);
+      log('INFO', `Found Chrome profile: ${p}`);
+    }
+  }
+  return { existing, defaultPath };
+}
+
+function setDeveloperModeInPrefs(prefsPath: string): void {
+  try {
+    const raw = fs.existsSync(prefsPath) ? fs.readFileSync(prefsPath, 'utf-8') : '{}';
+    const prefs = JSON.parse(raw);
+    if (!prefs.extensions) prefs.extensions = {};
+    if (!prefs.extensions.ui) prefs.extensions.ui = {};
+    if (prefs.extensions.ui.developer_mode === true) {
+      log('INFO', `Developer mode already on: ${prefsPath}`);
+      return;
+    }
+    prefs.extensions.ui.developer_mode = true;
+    fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs));
+    log('INFO', `Developer mode enabled: ${prefsPath}`);
+  } catch (err) {
+    log('ERROR', `Failed to write ${prefsPath}: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Enable Chrome Developer Mode across all found profiles.
+ * If no Preferences file exists, create the Default profile directory and file.
  * Must be called while Chrome is NOT running (Chrome overwrites Preferences on exit).
  */
 function enableChromeDeveloperMode(): void {
-  const prefsPath = getChromePreferencesPath();
-  log('INFO', `Chrome Preferences path: ${prefsPath ?? 'unknown'}`);
+  const userDataDir = getChromeUserDataDir();
+  log('INFO', `Chrome User Data dir: ${userDataDir ?? 'unknown'}`);
 
-  if (!prefsPath || !fs.existsSync(prefsPath)) {
-    log('WARN', 'Chrome Preferences file not found — skipping developer mode enable');
+  if (!userDataDir) {
+    log('WARN', 'Unknown platform — cannot locate Chrome User Data');
     return;
   }
 
-  try {
-    const raw = fs.readFileSync(prefsPath, 'utf-8');
-    const prefs = JSON.parse(raw);
+  const { existing, defaultPath } = findChromeProfilePaths(userDataDir);
 
-    if (!prefs.extensions) prefs.extensions = {};
-    if (!prefs.extensions.ui) prefs.extensions.ui = {};
-
-    if (prefs.extensions.ui.developer_mode === true) {
-      log('INFO', 'Chrome developer mode already enabled');
-      return;
-    }
-
-    prefs.extensions.ui.developer_mode = true;
-    fs.writeFileSync(prefsPath, JSON.stringify(prefs));
-    log('INFO', 'Chrome developer mode enabled successfully');
-  } catch (err) {
-    log('ERROR', `Could not enable Chrome developer mode: ${(err as Error).message}`);
+  if (existing.length > 0) {
+    for (const p of existing) setDeveloperModeInPrefs(p);
+  } else {
+    // No existing profile — create Default profile with developer mode on
+    log('INFO', `No Chrome profiles found, creating Default profile at: ${defaultPath}`);
+    setDeveloperModeInPrefs(defaultPath);
   }
 }
 
