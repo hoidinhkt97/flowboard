@@ -19,6 +19,9 @@ extraResources:
   - from: "../agent/dist/flowboard-agent"
     to: "agent"
     filter: ["**/*"]
+  - from: "../extension"
+    to: "extension"
+    filter: ["**/*", "!*.md"]
 
 asar: true
 asarUnpack: []

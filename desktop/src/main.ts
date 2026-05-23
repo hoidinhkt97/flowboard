@@ -5,6 +5,7 @@ import { resolveAgentBinaryPath, getFrontendUrl } from './paths';
 import { readLogTail } from './log-tail';
 import { createSplashWindow, createMainWindow, closeSplash } from './window-manager';
 import { buildMenu } from './menu';
+import { ensureExtensionConnected } from './extension-launcher';
 
 const isDev = process.env.FLOWBOARD_DEV === '1';
 const agentManager = new AgentManager();
@@ -89,6 +90,9 @@ async function startup(): Promise<void> {
 
   createMainWindow(frontendUrl);
   closeSplash();
+
+  // Auto-launch Chrome with extension if not already connected (fire-and-forget)
+  void ensureExtensionConnected(httpPort);
 }
 
 app.whenReady().then(startup);
