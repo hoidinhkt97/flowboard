@@ -278,12 +278,60 @@ export function launchChromeWithExtension(): void {
 }
 
 /**
+ * Show a dialog with manual install instructions when auto-install fails.
+ * Provides buttons to open chrome://extensions and the extension folder.
+ */
+async function showManualInstallDialog(): Promise<void> {
+  const { dialog } = require('electron') as typeof import('electron');
+  const writableExtDir = path.join(app.getPath('userData'), 'extension');
+
+  // Make sure extension is copied so the path exists when user opens it
+  if (!fs.existsSync(writableExtDir)) {
+    syncExtensionToUserData();
+  }
+
+  const result = await dialog.showMessageBox({
+    type: 'info',
+    title: 'Cài Flowboard Extension',
+    message: 'Chrome đời mới không cho phép tự cài extension. Vui lòng cài thủ công 1 lần:',
+    detail:
+      `1. Bấm "Mở Chrome Extensions" để mở trang chrome://extensions\n` +
+      `2. Bật "Chế độ dành cho nhà phát triển" (góc phải trên)\n` +
+      `3. Bấm "Tải tiện ích đã giải nén" (Load unpacked)\n` +
+      `4. Chọn folder: ${writableExtDir}\n` +
+      `5. Quay lại Flowboard và bấm "Scan extension"\n\n` +
+      `Bấm "Mở Folder Extension" để Flowboard mở sẵn folder cho bạn copy đường dẫn.`,
+    buttons: ['Mở Chrome Extensions', 'Mở Folder Extension', 'Đóng'],
+    defaultId: 0,
+    cancelId: 2,
+  });
+
+  const chromePath = findChrome();
+  if (result.response === 0 && chromePath) {
+    // Open chrome://extensions in the active profile
+    const userDataDir = getChromeUserDataDir();
+    const profileDir = userDataDir ? getActiveProfileDir(userDataDir) : 'Default';
+    log('INFO', `Opening chrome://extensions in profile ${profileDir}`);
+    const child = spawn(
+      chromePath,
+      [`--profile-directory=${profileDir}`, 'chrome://extensions'],
+      { detached: true, stdio: 'ignore' }
+    );
+    child.unref();
+  } else if (result.response === 1) {
+    log('INFO', `Opening extension folder: ${writableExtDir}`);
+    void shell.openPath(writableExtDir);
+  }
+}
+
+/**
  * After agent is ready: if extension is not connected, auto-launch Chrome.
- * Polls /api/health until extension_connected = true or timeout.
+ * Polls /api/health until extension_connected = true. If extension doesn't
+ * connect within `autoInstallWaitMs`, falls back to manual install dialog.
  */
 export async function ensureExtensionConnected(
   httpPort: number,
-  opts = { timeoutMs: 60_000, intervalMs: 2_000 }
+  opts = { timeoutMs: 60_000, intervalMs: 2_000, autoInstallWaitMs: 10_000 }
 ): Promise<boolean> {
   log('INFO', `Checking extension connection on port ${httpPort}`);
 
@@ -296,7 +344,9 @@ export async function ensureExtensionConnected(
   launchChromeWithExtension();
 
   const deadline = Date.now() + opts.timeoutMs;
+  const autoInstallDeadline = Date.now() + opts.autoInstallWaitMs;
   let attempt = 0;
+  let manualDialogShown = false;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, opts.intervalMs));
     attempt++;
@@ -305,6 +355,13 @@ export async function ensureExtensionConnected(
     if (connected) {
       log('INFO', 'Extension connected successfully');
       return true;
+    }
+    // If auto-install window has passed and extension still not connected,
+    // show manual install dialog (once)
+    if (!manualDialogShown && Date.now() > autoInstallDeadline) {
+      manualDialogShown = true;
+      log('WARN', 'Auto-install timeout — showing manual install dialog');
+      void showManualInstallDialog();
     }
   }
 
