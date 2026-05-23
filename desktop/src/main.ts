@@ -12,6 +12,21 @@ const agentManager = new AgentManager();
 
 let isQuitting = false;
 
+// Single-instance lock: if another instance is already running, focus it and quit this one
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // Focus existing main window when user tries to open a second instance
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  });
+}
+
 function getPathContext() {
   return {
     platform: process.platform,
