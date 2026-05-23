@@ -148,6 +148,33 @@ export function resolveExtensionDir(): string {
   return path.join(app.getAppPath(), '..', 'extension');
 }
 
+/**
+ * Copy the bundled extension to a user-writable location.
+ * Chrome refuses to load unpacked extensions from C:\Program Files
+ * (UAC-protected). Copy to userData/extension instead.
+ * Returns the writable extension path.
+ */
+function syncExtensionToUserData(): string {
+  const src = resolveExtensionDir();
+  const dst = path.join(app.getPath('userData'), 'extension');
+
+  if (!fs.existsSync(src)) {
+    log('ERROR', `Source extension dir does not exist: ${src}`);
+    return src;
+  }
+
+  try {
+    // Always re-sync to pick up extension updates from app upgrades
+    fs.rmSync(dst, { recursive: true, force: true });
+    fs.cpSync(src, dst, { recursive: true });
+    log('INFO', `Extension synced: ${src} -> ${dst}`);
+    return dst;
+  } catch (err) {
+    log('ERROR', `Failed to copy extension to userData: ${(err as Error).message}`);
+    return src; // fall back to source path even if Chrome may refuse
+  }
+}
+
 /** Check /api/health for extension_connected flag. */
 export function isExtensionConnected(httpPort: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -215,16 +242,25 @@ export function launchChromeWithExtension(): void {
     child.unref();
   } else {
     // Chrome not running → safe to modify Preferences and use --load-extension.
-    log('INFO', 'Step 1: Enabling Chrome developer mode');
+    log('INFO', 'Step 1: Copying extension to user-writable location');
+    const writableExtensionDir = syncExtensionToUserData();
+
+    log('INFO', 'Step 2: Enabling Chrome developer mode');
     enableChromeDeveloperMode();
 
-    log('INFO', `Step 2: Spawning Chrome with --load-extension=${extensionDir}`);
-    log('INFO', `Step 3: Navigating to ${FLOW_URL}`);
+    // Determine active profile to force Chrome to open that one
+    const userDataDir = getChromeUserDataDir();
+    const profileDir = userDataDir ? getActiveProfileDir(userDataDir) : 'Default';
+    log('INFO', `Step 3: Forcing profile-directory=${profileDir}`);
+
+    log('INFO', `Step 4: Spawning Chrome with --load-extension=${writableExtensionDir}`);
+    log('INFO', `Step 5: Navigating to ${FLOW_URL}`);
 
     const child = spawn(
       chromePath,
       [
-        `--load-extension=${extensionDir}`,
+        `--profile-directory=${profileDir}`,
+        `--load-extension=${writableExtensionDir}`,
         '--no-first-run',
         '--no-default-browser-check',
         FLOW_URL,
