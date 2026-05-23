@@ -136,17 +136,25 @@ class CustomOpenAIProvider:
 
         if resp.status_code != 200:
             raise LLMError(
-                f"custom_openai HTTP {resp.status_code}: {_safe_error_message(resp)}"
+                f"HTTP {resp.status_code} from {endpoint}: {_safe_error_message(resp)}"
             )
 
         try:
             data = resp.json()
         except ValueError as exc:
-            raise LLMError("custom_openai response was not JSON") from exc
+            body_snippet = resp.text[:200].replace("\n", " ")
+            raise LLMError(
+                f"Endpoint returned non-JSON (URL: {endpoint}). "
+                f"Check that the URL ends at /v1 and points to an OpenAI-compatible "
+                f"chat completions API. Response: {body_snippet!r}"
+            ) from exc
         try:
             return data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise LLMError(f"custom_openai response missing content: {data!r:.200}") from exc
+            raise LLMError(
+                f"Response missing 'choices[0].message.content' field. "
+                f"Body: {str(data)[:300]}"
+            ) from exc
 
 
 # ── helpers ────────────────────────────────────────────────────────────
