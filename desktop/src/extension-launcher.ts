@@ -4,6 +4,20 @@ import * as http from 'http';
 import * as path from 'path';
 import { app, shell } from 'electron';
 
+let logStream: fs.WriteStream | null = null;
+
+function log(level: 'INFO' | 'WARN' | 'ERROR', msg: string): void {
+  const line = `[${new Date().toISOString()}] [${level}] [extension] ${msg}`;
+  console.log(line);
+  if (!logStream) {
+    const logsDir = path.join(app.getPath('userData'), 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    logStream = fs.createWriteStream(path.join(logsDir, 'extension.log'), { flags: 'a' });
+    logStream.write(`\n=== Extension launcher start ${new Date().toISOString()} ===\n`);
+  }
+  logStream.write(line + '\n');
+}
+
 const FLOW_URL = 'https://labs.google/fx/tools/flow';
 
 // Known Chrome executable paths per platform
@@ -47,10 +61,13 @@ function getChromePreferencesPath(): string | null {
  */
 function enableChromeDeveloperMode(): void {
   const prefsPath = getChromePreferencesPath();
+  log('INFO', `Chrome Preferences path: ${prefsPath ?? 'unknown'}`);
+
   if (!prefsPath || !fs.existsSync(prefsPath)) {
-    console.log('[extension-launcher] Chrome Preferences not found, skipping dev-mode enable');
+    log('WARN', 'Chrome Preferences file not found — skipping developer mode enable');
     return;
   }
+
   try {
     const raw = fs.readFileSync(prefsPath, 'utf-8');
     const prefs = JSON.parse(raw);
@@ -59,22 +76,26 @@ function enableChromeDeveloperMode(): void {
     if (!prefs.extensions.ui) prefs.extensions.ui = {};
 
     if (prefs.extensions.ui.developer_mode === true) {
-      console.log('[extension-launcher] Chrome developer mode already enabled');
+      log('INFO', 'Chrome developer mode already enabled');
       return;
     }
 
     prefs.extensions.ui.developer_mode = true;
     fs.writeFileSync(prefsPath, JSON.stringify(prefs));
-    console.log('[extension-launcher] Chrome developer mode enabled');
+    log('INFO', 'Chrome developer mode enabled successfully');
   } catch (err) {
-    console.warn('[extension-launcher] Could not enable Chrome developer mode:', err);
+    log('ERROR', `Could not enable Chrome developer mode: ${(err as Error).message}`);
   }
 }
 
 function findChrome(): string | null {
   const candidates = CHROME_PATHS[process.platform] ?? [];
   for (const p of candidates) {
-    if (p && fs.existsSync(p)) return p;
+    if (p && fs.existsSync(p)) {
+      log('INFO', `Chrome found at: ${p}`);
+      return p;
+    }
+    log('INFO', `Chrome not at: ${p}`);
   }
   return null;
 }
@@ -122,25 +143,30 @@ export function isExtensionConnected(httpPort: number): Promise<boolean> {
  * Falls back to shell.openExternal if Chrome binary is not found.
  */
 export function launchChromeWithExtension(): void {
+  log('INFO', 'Starting Chrome launch sequence');
+
   const chromePath = findChrome();
   const extensionDir = resolveExtensionDir();
+  log('INFO', `Extension directory: ${extensionDir}`);
+  log('INFO', `Extension directory exists: ${fs.existsSync(extensionDir)}`);
 
   if (!chromePath) {
-    console.log('[extension-launcher] Chrome not found, opening default browser');
+    log('WARN', 'Chrome binary not found on any known path — falling back to default browser');
     void shell.openExternal(FLOW_URL);
     return;
   }
 
   if (!fs.existsSync(extensionDir)) {
-    console.warn('[extension-launcher] Extension directory not found at', extensionDir);
+    log('ERROR', `Extension directory not found at ${extensionDir} — falling back to default browser`);
     void shell.openExternal(FLOW_URL);
     return;
   }
 
-  // Enable developer mode so --load-extension is accepted by Chrome
+  log('INFO', 'Step 1: Enabling Chrome developer mode');
   enableChromeDeveloperMode();
 
-  console.log('[extension-launcher] Launching Chrome with --load-extension:', extensionDir);
+  log('INFO', `Step 2: Spawning Chrome with --load-extension=${extensionDir}`);
+  log('INFO', `Step 3: Navigating to ${FLOW_URL}`);
 
   const child = spawn(
     chromePath,
@@ -152,7 +178,10 @@ export function launchChromeWithExtension(): void {
     ],
     { detached: true, stdio: 'ignore' }
   );
+  child.on('error', (err) => log('ERROR', `Chrome spawn error: ${err.message}`));
   child.unref();
+
+  log('INFO', 'Chrome spawned — waiting for extension to connect');
 }
 
 /**
@@ -163,20 +192,29 @@ export async function ensureExtensionConnected(
   httpPort: number,
   opts = { timeoutMs: 60_000, intervalMs: 2_000 }
 ): Promise<boolean> {
-  if (await isExtensionConnected(httpPort)) return true;
+  log('INFO', `Checking extension connection on port ${httpPort}`);
 
-  console.log('[extension-launcher] Extension not connected — launching Chrome with extension');
+  if (await isExtensionConnected(httpPort)) {
+    log('INFO', 'Extension already connected — no action needed');
+    return true;
+  }
+
+  log('INFO', 'Extension not connected — launching Chrome with extension');
   launchChromeWithExtension();
 
   const deadline = Date.now() + opts.timeoutMs;
+  let attempt = 0;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, opts.intervalMs));
-    if (await isExtensionConnected(httpPort)) {
-      console.log('[extension-launcher] Extension connected');
+    attempt++;
+    const connected = await isExtensionConnected(httpPort);
+    log('INFO', `Poll attempt ${attempt}: extension_connected=${connected}`);
+    if (connected) {
+      log('INFO', 'Extension connected successfully');
       return true;
     }
   }
 
-  console.warn('[extension-launcher] Extension did not connect within timeout');
+  log('WARN', `Extension did not connect after ${attempt} attempts (${opts.timeoutMs / 1000}s timeout)`);
   return false;
 }
