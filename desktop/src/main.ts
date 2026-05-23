@@ -1,24 +1,14 @@
 import { app, BrowserWindow } from 'electron';
+import { createSplashWindow, createMainWindow, closeSplash } from './window-manager';
 
-function createWindow(): void {
-  const win = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
+app.whenReady().then(async () => {
+  createSplashWindow();
 
-  win.loadURL('data:text/html;charset=utf-8,<h1>Flowboard Desktop — bootstrap OK</h1>');
-}
+  // Simulate agent boot delay for now (Task 10 will replace with real wait)
+  await new Promise((r) => setTimeout(r, 2000));
 
-app.whenReady().then(() => {
-  createWindow();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
+  createMainWindow('data:text/html;charset=utf-8,<h1>Main window</h1>');
+  closeSplash();
 });
 
 app.on('window-all-closed', () => {
