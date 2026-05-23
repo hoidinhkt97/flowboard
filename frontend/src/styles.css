@@ -5702,3 +5702,52 @@ button:disabled {
   animation: none;
 }
 
+/* ────────────────────────────────────────────────────────────────────
+   Custom OpenAI provider form (Settings → AI Providers)
+   ─────────────────────────────────────────────────────────────────── */
+.custom-provider-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.custom-provider-form__row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.custom-provider-form__label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.custom-provider-form__input {
+  padding: 8px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.12s, background 0.12s;
+}
+.custom-provider-form__input:focus {
+  border-color: var(--accent);
+  background: var(--panel-high);
+}
+.custom-provider-form__input::placeholder {
+  color: var(--muted);
+  opacity: 0.6;
+}
+.custom-provider-form__status {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 6px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+
+
