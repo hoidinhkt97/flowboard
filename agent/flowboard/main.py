@@ -105,6 +105,24 @@ app.include_router(llm.router)
 app.include_router(activity.router)
 
 
+# Mount frontend static files if frontend/dist exists (desktop app deployment)
+from pathlib import Path as _Path
+import os as _os
+from fastapi.staticfiles import StaticFiles as _StaticFiles
+
+_frontend_dist = _os.getenv("FLOWBOARD_FRONTEND_DIST")
+if _frontend_dist:
+    _frontend_path = _Path(_frontend_dist)
+else:
+    _frontend_path = _Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+
+if _frontend_path.exists() and (_frontend_path / "index.html").exists():
+    app.mount("/app", _StaticFiles(directory=str(_frontend_path), html=True), name="frontend")
+    logger.info("mounted frontend static files from %s", _frontend_path)
+else:
+    logger.info("frontend dist not found at %s (skipping static mount)", _frontend_path)
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {
