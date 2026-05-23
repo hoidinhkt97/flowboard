@@ -23,6 +23,54 @@ const CHROME_PATHS: Record<string, string[]> = {
   ],
 };
 
+// Chrome Preferences file path per platform
+function getChromePreferencesPath(): string | null {
+  if (process.platform === 'win32') {
+    const base = process.env.LOCALAPPDATA ?? '';
+    return path.join(base, 'Google', 'Chrome', 'User Data', 'Default', 'Preferences');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(
+      process.env.HOME ?? '',
+      'Library', 'Application Support', 'Google', 'Chrome', 'Default', 'Preferences'
+    );
+  }
+  if (process.platform === 'linux') {
+    return path.join(process.env.HOME ?? '', '.config', 'google-chrome', 'Default', 'Preferences');
+  }
+  return null;
+}
+
+/**
+ * Enable Chrome Developer Mode in the Default profile Preferences file.
+ * Must be called while Chrome is NOT running (Chrome overwrites Preferences on exit).
+ */
+function enableChromeDeveloperMode(): void {
+  const prefsPath = getChromePreferencesPath();
+  if (!prefsPath || !fs.existsSync(prefsPath)) {
+    console.log('[extension-launcher] Chrome Preferences not found, skipping dev-mode enable');
+    return;
+  }
+  try {
+    const raw = fs.readFileSync(prefsPath, 'utf-8');
+    const prefs = JSON.parse(raw);
+
+    if (!prefs.extensions) prefs.extensions = {};
+    if (!prefs.extensions.ui) prefs.extensions.ui = {};
+
+    if (prefs.extensions.ui.developer_mode === true) {
+      console.log('[extension-launcher] Chrome developer mode already enabled');
+      return;
+    }
+
+    prefs.extensions.ui.developer_mode = true;
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs));
+    console.log('[extension-launcher] Chrome developer mode enabled');
+  } catch (err) {
+    console.warn('[extension-launcher] Could not enable Chrome developer mode:', err);
+  }
+}
+
 function findChrome(): string | null {
   const candidates = CHROME_PATHS[process.platform] ?? [];
   for (const p of candidates) {
@@ -31,7 +79,7 @@ function findChrome(): string | null {
   return null;
 }
 
-function resolveExtensionDir(): string {
+export function resolveExtensionDir(): string {
   if (app.isPackaged) {
     return path.join(process.resourcesPath, 'extension');
   }
@@ -64,9 +112,13 @@ export function isExtensionConnected(httpPort: number): Promise<boolean> {
 }
 
 /**
- * Launch Chrome with the Flowboard extension loaded and open labs.google/flow.
- * Uses --load-extension + dedicated --user-data-dir so the flag works
- * even when Chrome is already open.
+ * Launch Chrome with Flowboard extension auto-loaded.
+ *
+ * Steps:
+ * 1. Enable developer mode in Chrome Preferences (while Chrome is not running)
+ * 2. Launch Chrome with --load-extension pointing to the bundled extension
+ * 3. Navigate to labs.google/fx/tools/flow so the extension can capture the token
+ *
  * Falls back to shell.openExternal if Chrome binary is not found.
  */
 export function launchChromeWithExtension(): void {
@@ -85,20 +137,27 @@ export function launchChromeWithExtension(): void {
     return;
   }
 
-  console.log('[extension-launcher] Launching Chrome to', FLOW_URL);
+  // Enable developer mode so --load-extension is accepted by Chrome
+  enableChromeDeveloperMode();
 
-  // Open Chrome with the user's default profile (extension already installed there)
+  console.log('[extension-launcher] Launching Chrome with --load-extension:', extensionDir);
+
   const child = spawn(
     chromePath,
-    ['--new-window', FLOW_URL],
+    [
+      `--load-extension=${extensionDir}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      FLOW_URL,
+    ],
     { detached: true, stdio: 'ignore' }
   );
-  child.unref(); // Chrome outlives the Electron app
+  child.unref();
 }
 
 /**
- * After agent ready: if extension is not connected, auto-launch Chrome.
- * Resolves true when connected, false if timeout reached.
+ * After agent is ready: if extension is not connected, auto-launch Chrome.
+ * Polls /api/health until extension_connected = true or timeout.
  */
 export async function ensureExtensionConnected(
   httpPort: number,
@@ -106,7 +165,7 @@ export async function ensureExtensionConnected(
 ): Promise<boolean> {
   if (await isExtensionConnected(httpPort)) return true;
 
-  console.log('[extension-launcher] Extension not connected — launching Chrome');
+  console.log('[extension-launcher] Extension not connected — launching Chrome with extension');
   launchChromeWithExtension();
 
   const deadline = Date.now() + opts.timeoutMs;
