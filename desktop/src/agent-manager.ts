@@ -11,6 +11,7 @@ export interface AgentConfig {
   startPort: number;
   endPort: number;
   wsPort: number;
+  frontendDist?: string; // passed as FLOWBOARD_FRONTEND_DIST when packaged
 }
 
 export interface AgentStatus {
@@ -50,6 +51,7 @@ export class AgentManager {
       FLOWBOARD_EXT_WS_PORT: String(config.wsPort),
       FLOWBOARD_WS_HOST: '127.0.0.1',
       PYTHONUNBUFFERED: '1',
+      ...(config.frontendDist ? { FLOWBOARD_FRONTEND_DIST: config.frontendDist } : {}),
     };
 
     this.process = spawn(config.binaryPath, [], {

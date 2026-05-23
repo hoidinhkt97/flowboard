@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, Menu } from 'electron';
 import * as path from 'path';
 import { AgentManager } from './agent-manager';
-import { resolveAgentBinaryPath, getFrontendUrl } from './paths';
+import { resolveAgentBinaryPath } from './paths';
 import { readLogTail } from './log-tail';
 import { createSplashWindow, createMainWindow, closeSplash } from './window-manager';
 import { buildMenu } from './menu';
@@ -51,7 +51,11 @@ async function startup(): Promise<void> {
       httpPort = 8101;
       console.log('[dev] Skipping agent spawn, expecting agent on port 8101');
     } else {
-      const binaryPath = resolveAgentBinaryPath(getPathContext());
+      const ctx = getPathContext();
+      const binaryPath = resolveAgentBinaryPath(ctx);
+      const frontendDist = app.isPackaged
+        ? path.join(process.resourcesPath, 'frontend')
+        : undefined;
       const result = await agentManager.start({
         binaryPath,
         storageDir: getStorageDir(),
@@ -59,6 +63,7 @@ async function startup(): Promise<void> {
         startPort: 8101,
         endPort: 8110,
         wsPort: 9223,
+        frontendDist,
       });
       httpPort = result.httpPort;
     }
@@ -83,12 +88,8 @@ async function startup(): Promise<void> {
     }).then(() => app.quit());
   });
 
-  const ctx = getPathContext();
-  const frontendUrl = isDev
-    ? `http://127.0.0.1:${httpPort}/app/`
-    : getFrontendUrl(ctx);
-
-  createMainWindow(frontendUrl);
+  // Always load frontend via HTTP — file:// + base='/app/' causes wrong asset paths
+  createMainWindow(`http://127.0.0.1:${httpPort}/app/`);
   closeSplash();
 
   // Auto-launch Chrome with extension if not already connected (fire-and-forget)
