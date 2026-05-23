@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useBoardStore } from "../store/board";
 import { AccountPanel } from "./AccountPanel";
+import {
+  getFlowSyncStatus,
+  syncBoardsUpToFlow,
+  type BoardFlowStatus,
+} from "../api/client";
 
 /**
  * Left sidebar listing every local "project" (Board). Click an item to
@@ -27,6 +32,61 @@ export function ProjectSidebar() {
   const newDialogInputRef = useRef<HTMLInputElement>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+
+  // Flow project sync — one-way (local → Flow). The map tracks which
+  // local boards still have a live Flow project; the sync button
+  // auto-creates Flow projects for any board that's missing one.
+  const [flowStatus, setFlowStatus] = useState<Map<number, BoardFlowStatus>>(
+    () => new Map(),
+  );
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncSummary, setSyncSummary] = useState<string | null>(null);
+
+  async function refreshStatus(): Promise<Map<number, BoardFlowStatus>> {
+    const res = await getFlowSyncStatus();
+    const m = new Map(res.board_status.map((b) => [b.board_id, b]));
+    setFlowStatus(m);
+    return m;
+  }
+
+  async function handleSyncClick() {
+    if (syncing) return;
+    setSyncing(true);
+    setSyncError(null);
+    setSyncSummary(null);
+    try {
+      // Refresh status, then push any orphans up to Flow in one shot.
+      const status = await refreshStatus();
+      const orphans = Array.from(status.values()).filter(
+        (b) => !b.exists_on_flow,
+      ).length;
+      if (orphans === 0) {
+        setSyncSummary("All boards already on Flow ✓");
+      } else {
+        const res = await syncBoardsUpToFlow();
+        await refreshStatus();
+        const ok = res.synced.length;
+        const fail = res.failed.length;
+        setSyncSummary(
+          fail === 0
+            ? `Pushed ${ok} board${ok !== 1 ? "s" : ""} to Flow ✓`
+            : `Pushed ${ok}, ${fail} failed — see agent log`,
+        );
+      }
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : "sync failed");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  // First-mount status read — best-effort, silent on failure (extension
+  // might not be connected yet; user can hit the button to retry).
+  useEffect(() => {
+    refreshStatus().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (renamingId !== null) {
@@ -154,17 +214,47 @@ export function ProjectSidebar() {
       </div>
       {!collapsed && (
         <>
-          <button
-            type="button"
-            className="project-sidebar__new"
-            onClick={handleNew}
-          >
-            <span aria-hidden="true">+</span> New project
-          </button>
+          <div className="project-sidebar__row">
+            <button
+              type="button"
+              className="project-sidebar__new"
+              onClick={handleNew}
+            >
+              <span aria-hidden="true">+</span> New project
+            </button>
+            <button
+              type="button"
+              className="project-sidebar__sync"
+              onClick={handleSyncClick}
+              disabled={syncing}
+              title="Push every local board up to Google Flow — creates a Flow project for any board that's missing one"
+              aria-label="Sync local boards up to Google Flow"
+            >
+              {syncing ? "…" : "🔄"}
+            </button>
+          </div>
+          {syncError && (
+            <div className="project-sidebar__sync-error" role="status">
+              Flow sync: {syncError}
+            </div>
+          )}
+          {syncSummary && !syncError && (
+            <div className="project-sidebar__sync-ok" role="status">
+              {syncSummary}
+            </div>
+          )}
           <ul className="project-sidebar__list">
             {boards.map((b) => {
               const isActive = b.id === activeId;
               const isRenaming = b.id === renamingId;
+              const status = flowStatus.get(b.id);
+              // Orphan = bound flow_project_id is missing from Flow's
+              // remote list. We only flag once we've synced at least
+              // once (status is present); pre-sync state is "unknown".
+              const isOrphan =
+                status !== undefined
+                && status.flow_project_id !== null
+                && status.exists_on_flow === false;
               return (
                 <li
                   key={b.id}
@@ -188,9 +278,22 @@ export function ProjectSidebar() {
                         type="button"
                         className="project-sidebar__name"
                         onClick={() => switchBoard(b.id)}
-                        title={b.name}
+                        title={
+                          isOrphan
+                            ? `${b.name} — Flow project ${status?.flow_project_id ?? ""} không tồn tại trên Google Flow. Click ⋯ → Rebind to re-link.`
+                            : b.name
+                        }
                       >
                         {b.name || "Untitled"}
+                        {isOrphan && (
+                          <span
+                            className="project-sidebar__orphan-badge"
+                            title="Flow project not found — rebind required"
+                            aria-label="orphan"
+                          >
+                            ⚠
+                          </span>
+                        )}
                       </button>
                       <button
                         type="button"
@@ -337,6 +440,7 @@ export function ProjectSidebar() {
           </div>
         </div>
       )}
+
     </aside>
   );
 }

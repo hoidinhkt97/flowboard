@@ -576,19 +576,20 @@ async def test_auto_prompt_video_uses_motion_system_prompt(client, monkeypatch):
     assert "dolly-in" in out
     assert "motion" in (captured["system_prompt"] or "").lower()
     assert "Korean woman" in captured["prompt"]
-    # Audio guard — must direct silent / no-dialogue by default.
-    # Veo's audio path triggers PUBLIC_MIRROR_AUDIO_FILTER on portraits
-    # the moment speech is generated, killing the entire request, so
-    # the synth has to instruct silent unless the user explicitly
-    # asked for dialogue.
+    # Audio guard — must direct no-speech by default (audio filter
+    # constraint) but ALLOW a soft background music bed so portrait
+    # clips don't render dead-silent. Veo's audio path triggers
+    # PUBLIC_MIRROR_AUDIO_FILTER on portraits the moment speech is
+    # generated, killing the entire request, so the synth has to
+    # instruct no-speech unless the user explicitly asked for dialogue.
     sp = captured["system_prompt"] or ""
     assert "AUDIO" in sp
-    assert "SILENT BY DEFAULT" in sp
+    assert "NO SPEECH" in sp
     assert "PUBLIC_MIRROR_AUDIO_FILTER" in sp
-    # SFX + music guidance present so the user's clip isn't completely
-    # bare when default-silent fires.
+    # SFX + background music guidance present so the user's clip has
+    # a gentle audio bed by default (not pure silence).
     assert "SFX" in sp
-    assert "MUSIC" in sp
+    assert "BACKGROUND MUSIC" in sp
 
 
 @pytest.mark.asyncio
@@ -1136,184 +1137,3 @@ async def test_aibrief_used_when_no_prompt(client, monkeypatch):
 
     assert "BRIEF-FALLBACK" in user
 
-
-# ── Storyboard planner ────────────────────────────────────────────────────
-# Plan: .omc/plans/storyboard-image-node.md §6.2.
-# auto_prompt_storyboard() composes a continuity tree in ONE LLM call,
-# returning {"prompts": [str * count], "parents": [int|None * count]}.
-
-import json as _json  # noqa: E402  (local alias to avoid clashing with module-scope)
-
-
-def _seed_storyboard_target(narrative_seed: str = "") -> int:
-    """Create a Board with one upstream character + one Storyboard target.
-    Returns the storyboard target node id."""
-    with get_session() as s:
-        b = Board(name="sb")
-        s.add(b); s.commit(); s.refresh(b)
-        char = Node(
-            board_id=b.id, short_id="sbch", type="character",
-            x=0, y=0, w=240, h=180,
-            data={
-                "title": "Model",
-                "aiBrief": "young Vietnamese woman, neutral expression, dark hair",
-                "mediaId": "uuuuuuuu-sbch-1111-2222-333333333333",
-            },
-            status="done",
-        )
-        target = Node(
-            board_id=b.id, short_id="sbtg", type="Storyboard",
-            x=0, y=0, w=240, h=180,
-            data={
-                "title": "Story",
-                "narrativeSeed": narrative_seed,
-            },
-            status="idle",
-        )
-        s.add_all([char, target]); s.commit()
-        for n in (char, target):
-            s.refresh(n)
-        s.add(Edge(board_id=b.id, source_id=char.id, target_id=target.id))
-        s.commit()
-        return target.id
-
-
-@pytest.mark.asyncio
-async def test_storyboard_addendum_present_batch_suffix_absent(
-    client, monkeypatch
-):
-    """The storyboard call must use _STORYBOARD_SUFFIX, NOT _BATCH_SUFFIX
-    — the variant pose-distinct addendum is the wrong objective for a
-    narrative sequence."""
-    tgt = _seed_storyboard_target(narrative_seed="unbox + try-on at home")
-    captured: dict = {}
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["system"] = system_prompt or ""
-        return _json.dumps({
-            "prompts": ["a", "b", "c", "d"],
-            "parents": [None, 0, 1, 2],
-        })
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    await prompt_synth.auto_prompt_storyboard(
-        tgt, count=4, narrative_seed="unbox + try-on at home"
-    )
-
-    sysp = captured["system"]
-    assert "STORYBOARD MODE" in sysp
-    assert "BATCH MODE" not in sysp
-    # Narrative seed gets injected into the suffix as a hint.
-    assert "unbox + try-on at home" in sysp
-
-
-@pytest.mark.asyncio
-async def test_storyboard_returns_object_with_prompts_and_parents(
-    client, monkeypatch
-):
-    tgt = _seed_storyboard_target()
-    payload = {
-        "prompts": [
-            "Beat 1 — establishing shot",
-            "Beat 2 — package appears",
-            "Beat 3 — opens package",
-            "Beat 4 — tries on jacket",
-            "Beat 5 — selfie",
-            "Beat 6 — exterior wide",
-            "Beat 7 — café window",
-            "Beat 8 — crosswalk",
-        ],
-        "parents": [None, 0, 1, 2, 3, None, 5, 6],
-    }
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        return _json.dumps(payload)
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    out = await prompt_synth.auto_prompt_storyboard(tgt, count=8)
-
-    assert isinstance(out, dict)
-    assert out["prompts"] == payload["prompts"]
-    assert out["parents"] == payload["parents"]
-
-
-@pytest.mark.asyncio
-async def test_storyboard_strips_markdown_fences(client, monkeypatch):
-    """Some providers wrap JSON in ```json fences despite the instruction
-    to skip preamble — the parser must strip them like auto_prompt_batch."""
-    tgt = _seed_storyboard_target()
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        return (
-            "```json\n"
-            + _json.dumps({"prompts": ["a", "b"], "parents": [None, 0]})
-            + "\n```"
-        )
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    out = await prompt_synth.auto_prompt_storyboard(tgt, count=2)
-    assert out == {"prompts": ["a", "b"], "parents": [None, 0]}
-
-
-@pytest.mark.asyncio
-async def test_storyboard_rejects_parents_zero_non_null(client, monkeypatch):
-    tgt = _seed_storyboard_target()
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        return _json.dumps({"prompts": ["a", "b"], "parents": [0, 0]})
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    with pytest.raises(prompt_synth.PromptSynthError, match="parents\\[0\\]"):
-        await prompt_synth.auto_prompt_storyboard(tgt, count=2)
-
-
-@pytest.mark.asyncio
-async def test_storyboard_rejects_parent_out_of_range(client, monkeypatch):
-    tgt = _seed_storyboard_target()
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        # parents[2] = 5 violates parents[k] < k
-        return _json.dumps({"prompts": ["a", "b", "c"], "parents": [None, 0, 5]})
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    with pytest.raises(prompt_synth.PromptSynthError, match="parents\\[2\\]"):
-        await prompt_synth.auto_prompt_storyboard(tgt, count=3)
-
-
-@pytest.mark.asyncio
-async def test_storyboard_rejects_length_mismatch(client, monkeypatch):
-    tgt = _seed_storyboard_target()
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        # len(prompts)=4 but len(parents)=3 — mismatch
-        return _json.dumps({
-            "prompts": ["a", "b", "c", "d"],
-            "parents": [None, 0, 1],
-        })
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    with pytest.raises(prompt_synth.PromptSynthError, match="length mismatch"):
-        await prompt_synth.auto_prompt_storyboard(tgt, count=4)
-
-
-@pytest.mark.asyncio
-async def test_storyboard_rejects_count_out_of_range(client, monkeypatch):
-    tgt = _seed_storyboard_target()
-    # No need to stub — count check fires before any LLM call
-    with pytest.raises(prompt_synth.PromptSynthError, match="1\\.\\.8"):
-        await prompt_synth.auto_prompt_storyboard(tgt, count=0)
-    with pytest.raises(prompt_synth.PromptSynthError, match="1\\.\\.8"):
-        await prompt_synth.auto_prompt_storyboard(tgt, count=9)
-
-
-@pytest.mark.asyncio
-async def test_storyboard_rejects_non_object_response(client, monkeypatch):
-    tgt = _seed_storyboard_target()
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        # Returns an array (the BATCH shape) instead of an object.
-        return _json.dumps(["a", "b"])
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    with pytest.raises(prompt_synth.PromptSynthError, match="not a JSON object"):
-        await prompt_synth.auto_prompt_storyboard(tgt, count=2)

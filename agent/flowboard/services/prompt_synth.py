@@ -148,17 +148,22 @@ _SYNTH_VIDEO_CORE = (
     "AUDIO — Veo generates sound, and that audio passes a content "
     "filter (`PUBLIC_MIRROR_AUDIO_FILTER`) that REJECTS the entire "
     "request when speech is generated over faces resembling real "
-    "people. Most Flowboard scenes are portraits, so default hard to "
-    "silent:\n"
-    "  • SILENT BY DEFAULT: no spoken dialogue, no voice-over, no "
-    "lip-sync, no singing, no humming, no whispering. Mouths stay "
-    "neutral closed-mouth.\n"
-    "  • SFX: only generic low-volume ambient cues that match the "
-    "setting (room tone, fabric rustle, light footsteps, soft "
-    "breeze). Keep it minimal — no effects-heavy soundscape.\n"
-    "  • MUSIC: optional soft restrained background — lo-fi, ambient "
-    "pad, gentle piano — at low volume. Never lyrical, never a "
-    "recognisable melody, never high-energy.\n"
+    "people. Most Flowboard scenes are portraits, so steer the audio "
+    "bed away from speech but DO include a gentle musical/ambient bed "
+    "by default — pure silence reads sterile:\n"
+    "  • NO SPEECH: no spoken dialogue, no voice-over, no lip-sync, "
+    "no singing, no humming, no whispering. Mouths stay neutral "
+    "closed-mouth.\n"
+    "  • BACKGROUND MUSIC (default ON): a soft, gentle musical bed at "
+    "low volume — lo-fi, ambient pad, mellow piano, soft acoustic "
+    "guitar, light strings, calm cinematic underscore. Pick a mood "
+    "that fits the scene (cozy / romantic / contemplative / serene). "
+    "Keep it instrumental — no lyrics, no recognisable melody, no "
+    "high-energy drops.\n"
+    "  • SFX (light layer over the music): subtle diegetic ambient "
+    "cues that match the setting (room tone, fabric rustle, light "
+    "footsteps, soft breeze, distant city hum). Keep them quiet — "
+    "they sit under the music, not on top.\n"
     "  • EXCEPTION: only when the user prompt EXPLICITLY asks for "
     "dialogue or singing should the clip include speech, and even "
     "then keep the audio direction generic (no specific accent / "
@@ -484,165 +489,6 @@ _BATCH_SUFFIX = (
     "  …\n"
     "]"
 )
-
-
-# Storyboard mode — see .omc/plans/storyboard-image-node.md §6.2.
-# Distinct from BATCH MODE: storyboard emits an OBJECT with prompts[] AND
-# parents[]. parents[k] = null → root (will be gen_image'd); parents[k] = j
-# (j<k) → continuation (will be edit_image'd from shots[j].mediaId), so the
-# k-th prompt should describe ONLY the delta from beat j.
-_STORYBOARD_SUFFIX = (
-    "\n\nSTORYBOARD MODE: Output ONE JSON OBJECT with exactly these keys:\n"
-    "  \"prompts\": array of EXACTLY {count} strings (≤280 chars each),\n"
-    "                each describing one beat of a continuous narrative —\n"
-    "                index 0 is the first beat, index {count}-1 the last.\n"
-    "  \"parents\": array of EXACTLY {count} entries, each null OR an integer.\n"
-    "                parents[k] = null  → beat k is a NEW SCENE/ROOT (will be\n"
-    "                  generated fresh — use ONLY when location/subject/visual\n"
-    "                  context legitimately changes from the prior beat).\n"
-    "                parents[k] = j (0 ≤ j < k) → beat k VISUALLY CONTINUES\n"
-    "                  from beat j — same room, same wardrobe, same framing\n"
-    "                  carry-over. The image will be EDITED from beat j's\n"
-    "                  output, so beat k's prompt MUST describe ONLY THE DELTA\n"
-    "                  (e.g. \"now opens the package\", \"now wearing the shirt\")\n"
-    "                  — DO NOT re-describe identity, room, lighting.\n"
-    "                Constraints: parents[0] MUST be null; parents[k] < k.\n"
-    "Coherence rules (every beat):\n"
-    "  • SAME subject identity across the whole sequence — anchor on\n"
-    "    `ref_image_1` if a person reference exists.\n"
-    "  • SAME products/wardrobe wherever the narrative places them.\n"
-    "  • Consistent lighting + colour palette within a continuity chain.\n"
-    "Per-beat:\n"
-    "  • photoreal editorial shot, GAZE engages camera, neutral closed-mouth.\n"
-    "  • each beat advances the story; no two beats interchangeable.\n"
-    "{narrative_seed_block}"
-    "Output ONLY the JSON object — no preamble, no markdown fences. Example:\n"
-    "{\n"
-    "  \"prompts\": [\n"
-    "    \"Editorial photo, woman in living room, hands empty, neutral pose, …\",\n"
-    "    \"Same scene, woman now holds sealed brown package on lap…\",\n"
-    "    \"Same scene, woman opens package, blue jacket emerging from tissue…\",\n"
-    "    \"Same scene, woman tries on the blue jacket…\"\n"
-    "  ],\n"
-    "  \"parents\": [null, 0, 1, 2]\n"
-    "}"
-)
-
-
-async def auto_prompt_storyboard(
-    node_id: int,
-    count: int,
-    *,
-    narrative_seed: str = "",
-) -> dict:
-    """Compose N narrative beats with a continuity tree in one LLM call.
-
-    Returns ``{"prompts": [str * count], "parents": [int|None * count]}``.
-    The planner LLM decides which beats are roots (fresh scene → gen_image)
-    and which are continuations (edit_image from a parent beat). See
-    `.omc/plans/storyboard-image-node.md` §4 + §6.2 for the full contract.
-    """
-    if not 1 <= count <= 8:
-        raise PromptSynthError(f"storyboard count must be 1..8, got {count}")
-
-    records, target = _collect_upstream(node_id)
-    if target is None:
-        raise PromptSynthError(f"node {node_id} not found")
-
-    subject_count = len(_distinct_subjects(records))
-    base_system = _image_system_prompt(subject_count)
-    seed = (narrative_seed or "").strip()
-    seed_block = (
-        f"\nNarrative seed (user intent — beats MUST follow this arc):\n"
-        f"  {seed}\n\n"
-        if seed
-        else ""
-    )
-    # Use .replace() rather than .format() because the suffix contains a
-    # literal JSON example with `{` and `}` that .format() would mis-parse.
-    suffix = (
-        _STORYBOARD_SUFFIX
-        .replace("{count}", str(count))
-        .replace("{narrative_seed_block}", seed_block)
-    )
-    system_prompt = base_system + suffix
-    user_msg = _format_user_message(records, target)
-
-    async with record_activity(
-        "auto_prompt_storyboard",
-        params={
-            "node_id": node_id,
-            "count": count,
-            "narrative_seed": seed[:200],
-        },
-        node_id=node_id,
-    ) as activity:
-        try:
-            text = await run_llm(
-                "auto_prompt", user_msg, system_prompt=system_prompt, timeout=120.0
-            )
-        except LLMError as exc:
-            raise PromptSynthError(
-                f"auto-prompt provider failed: {exc}"
-            ) from exc
-
-        text = (text or "").strip()
-        if text.startswith("```"):
-            text = text.lstrip("`")
-            if text.lower().startswith("json"):
-                text = text[4:]
-            text = text.rsplit("```", 1)[0].strip()
-
-        try:
-            obj = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise PromptSynthError(
-                f"storyboard provider returned non-JSON: {text[:200]!r}"
-            ) from exc
-        if not isinstance(obj, dict):
-            raise PromptSynthError(
-                "storyboard response is not a JSON object"
-            )
-
-        raw_prompts = obj.get("prompts")
-        raw_parents = obj.get("parents")
-        if not isinstance(raw_prompts, list) or not isinstance(raw_parents, list):
-            raise PromptSynthError(
-                "storyboard response missing prompts[] / parents[]"
-            )
-        if len(raw_prompts) != count or len(raw_parents) != count:
-            raise PromptSynthError(
-                f"storyboard length mismatch: prompts={len(raw_prompts)} "
-                f"parents={len(raw_parents)} expected={count}"
-            )
-
-        prompts: list[str] = []
-        for i, p in enumerate(raw_prompts):
-            if not isinstance(p, str) or not p.strip():
-                raise PromptSynthError(f"storyboard prompts[{i}] empty/non-str")
-            prompts.append(p.strip())
-
-        parents: list[Optional[int]] = []
-        for k, v in enumerate(raw_parents):
-            if v is None:
-                parents.append(None)
-                continue
-            if isinstance(v, bool) or not isinstance(v, int):
-                raise PromptSynthError(
-                    f"storyboard parents[{k}]={v!r} must be int or null"
-                )
-            if not 0 <= v < k:
-                raise PromptSynthError(
-                    f"storyboard parents[{k}]={v} out of range [0, {k})"
-                )
-            parents.append(v)
-
-        if parents[0] is not None:
-            raise PromptSynthError("storyboard parents[0] must be null (root)")
-
-        result = {"prompts": prompts, "parents": parents}
-        activity.set_result(result)
-        return result
 
 
 async def auto_prompt_batch(

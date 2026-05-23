@@ -113,11 +113,65 @@ button:disabled {
   display: flex;
   gap: 6px;
   align-items: center;
+  flex: 1;
 }
 .project-sidebar__new:hover {
   color: var(--text);
   border-color: var(--accent);
   background: var(--panel);
+}
+
+.project-sidebar__row {
+  display: flex;
+  align-items: stretch;
+  margin: 8px 10px 4px;
+  gap: 6px;
+}
+.project-sidebar__row .project-sidebar__new {
+  margin: 0;
+}
+.project-sidebar__sync {
+  padding: 0 10px;
+  font-size: 13px;
+  background: var(--panel-high);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+}
+.project-sidebar__sync:hover:not(:disabled) {
+  color: #ffd54a;
+  border-color: var(--accent);
+}
+.project-sidebar__sync:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+.project-sidebar__sync-error {
+  margin: 0 10px 4px;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+}
+
+.project-sidebar__orphan-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  font-size: 11px;
+  color: #ffd54a;
+}
+
+.project-sidebar__sync-ok {
+  margin: 0 10px 4px;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(110, 231, 183, 0.12);
+  color: #6ee7b7;
 }
 .project-sidebar__list {
   list-style: none;
@@ -1643,13 +1697,13 @@ button:disabled {
   background: var(--accent);
 }
 
-/* "★" overlay — reference-library save button. Sits top-right of the
-   tile (opposite the "Use →" affordance in the bottom-right corner)
-   so the two overlays never overlap. Same hover-reveal pattern. */
+/* "★" overlay — reference-library save button. Sits TOP-LEFT to avoid
+   overlapping the "Use →" pill which is top-right. Both buttons share
+   the same hover-reveal pattern; they never collide visually. */
 .thumbnail-tile__save-btn {
   position: absolute;
   top: 6px;
-  right: 6px;
+  left: 6px;
   width: 24px;
   height: 24px;
   border-radius: 50%;
@@ -1662,7 +1716,7 @@ button:disabled {
   font-size: 13px;
   line-height: 1;
   opacity: 0;
-  transition: opacity 80ms linear, background 80ms linear;
+  transition: opacity 80ms linear, background 80ms linear, color 80ms linear;
   z-index: 2;
 }
 .thumbnail-tile:hover .thumbnail-tile__save-btn,
@@ -1671,8 +1725,9 @@ button:disabled {
   opacity: 1;
 }
 .thumbnail-tile__save-btn:hover {
-  background: rgba(0, 0, 0, 0.85);
-  border-color: var(--accent);
+  background: var(--accent, #7c5cff);
+  border-color: var(--accent, #7c5cff);
+  color: #ffd54a;
 }
 
 /* Inline picker — shown below the tile grid when the upstream has 2+
@@ -3061,6 +3116,30 @@ button:disabled {
   font-family: ui-monospace, monospace;
 }
 
+/* Inline "ⓘ" affordance next to a label. Used to move static help text
+   out of the layout into a hover tooltip — keeps dialogs short while
+   preserving the information for users who want it. */
+.gen-dialog__info-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: help;
+  user-select: none;
+  opacity: 0.75;
+  transition: opacity 120ms ease, color 120ms ease;
+  vertical-align: middle;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.gen-dialog__info-tip:hover {
+  opacity: 1;
+  color: var(--accent);
+}
+
 .gen-dialog__textarea {
   width: 100%;
   background: var(--panel-high);
@@ -3099,6 +3178,19 @@ button:disabled {
   line-height: 1.5;
 }
 
+/* Locked-prompt banner — video target sees this when its upstream is a
+   Storyboard composite and the motion prompt is forced to the template. */
+.gen-dialog__hint--locked {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(120, 80, 200, 0.12);
+  border: 1px solid rgba(120, 80, 200, 0.35);
+  color: var(--text, #e5e7eb);
+}
+.gen-dialog__hint--locked strong {
+  color: var(--accent, #a78bfa);
+}
+
 .gen-dialog__auto-badge {
   display: inline-block;
   margin-left: 8px;
@@ -3131,6 +3223,48 @@ button:disabled {
   color: var(--text);
   border-color: var(--border);
   border-left-color: var(--accent);
+}
+
+/* Native <select> styled to match the dialog's chip/input aesthetic.
+   Used by the Generate-video model picker — replaces the chip row for
+   denser layout when the option list is longer than the chip row can
+   fit without wrapping. */
+.gen-dialog__select {
+  width: 100%;
+  padding: 6px 28px 6px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background-color: var(--panel-high);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  border-left: 2px solid var(--accent);
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23888' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 10px 6px;
+  transition: border-color 120ms ease;
+}
+
+.gen-dialog__select:hover {
+  border-color: var(--accent);
+}
+
+.gen-dialog__select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.gen-dialog__select option {
+  background-color: var(--panel-high);
+  color: var(--text);
+}
+
+.gen-dialog__select option:disabled {
+  color: var(--muted);
 }
 
 /* Tier radio row */
@@ -3505,6 +3639,23 @@ button:disabled {
 .result-viewer__btn--link {
   background: var(--panel-high);
   color: var(--text);
+}
+
+/* "★ Save to library" — distinct gold border so the user spots it in the
+   action stack (the other action buttons are all neutral grey). */
+.result-viewer__btn--save {
+  border-color: rgba(255, 213, 74, 0.55);
+  color: #ffd54a;
+}
+.result-viewer__btn--save:hover:not(:disabled) {
+  background: rgba(255, 213, 74, 0.12);
+  border-color: #ffd54a;
+}
+.result-viewer__btn--saved,
+.result-viewer__btn--saved:hover {
+  background: #ffd54a;
+  color: #1a1a1a;
+  border-color: #ffd54a;
 }
 
 /* Footer hint */
@@ -5210,68 +5361,30 @@ button:disabled {
 }
 
 /* ── Storyboard ─────────────────────────────────────────────────────── */
-.storyboard-empty {
-  padding: 8px 4px;
-  font-size: 11px;
-  text-align: center;
-}
-
-.storyboard-tile-wrap {
+/* Storyboard is now a thin image-node wrapper (single composite NxN grid
+   rendered as ONE image by Flow). We reuse ImageBody for the tile grid
+   and overlay a small corner badge labelling the chosen layout (e.g.
+   2×2 / 2×3 / 2×4, flipped for portrait composites). The multi-shot
+   continuity-tree variant has been retired. */
+.storyboard-wrap {
   position: relative;
 }
 
-.storyboard-badge {
+.storyboard-grid-badge {
   position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
+  padding: 2px 6px;
   font-size: 10px;
   line-height: 1;
-  padding: 2px 4px;
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.55);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.7);
   color: #fff;
   pointer-events: none;
   font-variant-numeric: tabular-nums;
-}
-
-.storyboard-badge--idx {
-  bottom: 4px;
-  left: 4px;
-  background: rgba(0, 0, 0, 0.7);
-}
-
-.storyboard-badge--cont {
-  top: 4px;
-  left: 4px;
-  background: var(--accent, #3b82f6);
-  color: #fff;
-}
-
-.storyboard-badge--blocked {
-  top: 4px;
-  right: 4px;
-  background: rgba(180, 60, 60, 0.85);
-  font-size: 11px;
-}
-
-.storyboard-retry-btn {
-  position: absolute;
-  bottom: 4px;
-  right: 4px;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.65);
-  color: #fff;
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  font-size: 13px;
-  line-height: 1;
-}
-
-.storyboard-retry-btn:hover {
-  background: rgba(0, 0, 0, 0.85);
-  border-color: var(--accent);
 }
 
 /* ── References panel (right sidebar) ──────────────────────────────────── */
@@ -5548,24 +5661,44 @@ button:disabled {
   top: 50%;
   right: 0;
   transform: translateY(-50%);
-  width: 24px;
-  height: 64px;
+  width: 28px;
+  height: 72px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--panel-high);
-  border: 1px solid var(--border);
+  /* Use the accent gradient so the tab reads as a clear affordance,
+     not a passive bezel. The star pulses gently to draw attention
+     toward the library on first mount. */
+  background: linear-gradient(180deg, var(--accent, #7c5cff), #5a3fd6);
+  border: 1px solid rgba(255, 213, 74, 0.55);
   border-right: none;
-  border-radius: 8px 0 0 8px;
-  color: var(--muted);
-  font-size: 14px;
+  border-radius: 10px 0 0 10px;
+  color: #ffd54a;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: -2px 2px 8px rgba(124, 92, 255, 0.35);
   z-index: 13;
-  transition: color 80ms ease, border-color 80ms ease, background 80ms ease;
+  transition: color 80ms ease, border-color 80ms ease, background 80ms ease, transform 120ms ease;
 }
 
 .references-panel__toggle-tab:hover {
-  color: var(--text);
-  background: var(--panel-higher);
-  border-color: var(--accent);
+  color: #fff;
+  transform: translateY(-50%) translateX(-2px);
+  border-color: #ffd54a;
+}
+
+/* Subtle attention pulse on the closed tab — runs once on mount per
+   page-load, then settles. Stops on hover to avoid noise during use. */
+@keyframes references-toggle-pulse {
+  0% { box-shadow: -2px 2px 8px rgba(124, 92, 255, 0.35); }
+  50% { box-shadow: -2px 2px 16px rgba(255, 213, 74, 0.65); }
+  100% { box-shadow: -2px 2px 8px rgba(124, 92, 255, 0.35); }
+}
+.references-panel__toggle-tab {
+  animation: references-toggle-pulse 2.4s ease-in-out 2;
+}
+.references-panel__toggle-tab:hover {
+  animation: none;
 }
 

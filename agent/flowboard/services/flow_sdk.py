@@ -25,9 +25,45 @@ logger = logging.getLogger(__name__)
 
 FLOW_API_BASE = "https://aisandbox-pa.googleapis.com"
 TRPC_CREATE_PROJECT = "https://labs.google/fx/api/trpc/project.createProject"
+TRPC_SEARCH_PROJECTS = "https://labs.google/fx/api/trpc/project.searchUserProjects"
 VIDEO_I2V_URL = f"{FLOW_API_BASE}/v1/video:batchAsyncGenerateVideoStartImage"
+# Omni Flash uses a separate endpoint that takes referenceImages[] (multi-
+# ref, asset-typed) instead of a single startImage. Different request shape
+# from Veo i2v — see gen_video_omni() for the body assembly.
+VIDEO_OMNI_URL = f"{FLOW_API_BASE}/v1/video:batchAsyncGenerateVideoReferenceImages"
 VIDEO_POLL_URL = f"{FLOW_API_BASE}/v1/video:batchCheckAsyncVideoGenerationStatus"
 UPLOAD_IMAGE_URL = f"{FLOW_API_BASE}/v1/flow/uploadImage"
+
+
+# Omni Flash — variable-duration r2v video model. Each duration maps to a
+# distinct Flow model key. Credit cost scales with duration. Same key on
+# Pro (TIER_ONE) and Ultra (TIER_TWO) per owner; revisit if Google ships
+# a per-tier Ultra variant.
+OMNI_FLASH_DURATION_KEYS: dict[int, str] = {
+    4: "abra_r2v_4s",
+    6: "abra_r2v_6s",
+    8: "abra_r2v_8s",
+    10: "abra_r2v_10s",
+}
+OMNI_FLASH_VALID_ASPECTS: set[str] = {
+    "VIDEO_ASPECT_RATIO_PORTRAIT",
+    "VIDEO_ASPECT_RATIO_LANDSCAPE",
+}
+# Informational — backend doesn't enforce, frontend surfaces to the user
+# at dispatch time so the credit cost is visible before submit.
+OMNI_FLASH_CREDIT_COST: dict[int, int] = {4: 15, 6: 20, 8: 25, 10: 30}
+
+
+def resolve_omni_flash_model(duration_s: int) -> str:
+    """Map a duration (4/6/8/10s) → Flow model key for Omni Flash.
+    Raises if the duration is unsupported."""
+    key = OMNI_FLASH_DURATION_KEYS.get(duration_s)
+    if not key:
+        raise ValueError(
+            f"Omni Flash duration {duration_s}s unsupported "
+            f"(valid: {sorted(OMNI_FLASH_DURATION_KEYS)})"
+        )
+    return key
 
 
 def _media_get_url(media_id: str) -> str:
@@ -276,6 +312,100 @@ class FlowSDK:
     def __init__(self, client: Optional[FlowClient] = None) -> None:
         self._client = client or flow_client
 
+    # ── project listing (TRPC search) ──────────────────────────────────────
+    async def search_user_projects(
+        self,
+        cursor: Optional[str] = None,
+        page_size: int = 20,
+        tool: str = "PINHOLE",
+    ) -> dict[str, Any]:
+        """Fetch one page of the user's Flow project list.
+
+        Returns ``{raw, projects, next_page_token}`` on success or
+        ``{raw, error}`` on failure. Each project is a dict with
+        ``project_id`` and ``project_title`` plus optional
+        ``thumbnail_media_key`` and ``creation_time``.
+        """
+        import json as _json
+        from urllib.parse import quote
+
+        input_json: dict[str, Any] = {
+            "json": {
+                "pageSize": page_size,
+                "toolName": tool,
+                "cursor": cursor,
+            },
+        }
+        # TRPC encodes the literal `undefined` cursor via meta on the
+        # first call. Subsequent calls pass a string cursor directly.
+        if cursor is None:
+            input_json["meta"] = {"values": {"cursor": ["undefined"]}}
+
+        url = (
+            f"{TRPC_SEARCH_PROJECTS}?input="
+            + quote(_json.dumps(input_json, separators=(",", ":")))
+        )
+        resp = await self._client.trpc_request(
+            url=url,
+            method="GET",
+            headers=_TRPC_HEADERS,
+            body=None,
+        )
+        if isinstance(resp, dict) and resp.get("error"):
+            return {"raw": resp, "error": resp["error"]}
+
+        # Response shape (per the canonical TRPC envelope):
+        #   data.result.data.json.result.{projects, nextPageToken}
+        try:
+            inner = resp["data"]["result"]["data"]["json"]["result"]
+        except (KeyError, TypeError):
+            return {"raw": resp, "error": "unexpected_search_response_shape"}
+
+        raw_projects = inner.get("projects") or []
+        projects: list[dict[str, Any]] = []
+        for p in raw_projects:
+            if not isinstance(p, dict):
+                continue
+            pid = p.get("projectId")
+            if not isinstance(pid, str) or not pid:
+                continue
+            info = p.get("projectInfo") if isinstance(p.get("projectInfo"), dict) else {}
+            projects.append({
+                "project_id": pid,
+                "project_title": info.get("projectTitle") or "Untitled",
+                "thumbnail_media_key": info.get("thumbnailMediaKey"),
+                "creation_time": p.get("creationTime"),
+            })
+        return {
+            "raw": resp,
+            "projects": projects,
+            "next_page_token": inner.get("nextPageToken"),
+        }
+
+    async def list_user_projects_all(
+        self, tool: str = "PINHOLE", max_pages: int = 10
+    ) -> dict[str, Any]:
+        """Paginate `search_user_projects` until exhausted (or max_pages).
+
+        Returns ``{projects, truncated}`` — truncated is True when we hit
+        the page cap with a non-null next_page_token still present.
+        """
+        all_projects: list[dict[str, Any]] = []
+        cursor: Optional[str] = None
+        for _ in range(max_pages):
+            page = await self.search_user_projects(cursor=cursor, tool=tool)
+            if page.get("error"):
+                return {
+                    "projects": all_projects,
+                    "truncated": True,
+                    "error": page["error"],
+                }
+            all_projects.extend(page.get("projects") or [])
+            cursor = page.get("next_page_token")
+            if not cursor:
+                return {"projects": all_projects, "truncated": False}
+        return {"projects": all_projects, "truncated": True}
+
     # ── project creation (TRPC) ────────────────────────────────────────────
     async def create_project(
         self, title: str, tool: str = "PINHOLE"
@@ -395,6 +525,95 @@ class FlowSDK:
         # NEW low-priority workflow models return `data.workflows[]` with a
         # `primaryMediaId` per workflow instead of operations. Surface the
         # pairing so the poller can hit `/v1/media/<id>` directly.
+        workflows = extract_video_workflows(resp)
+        if workflows:
+            out["workflows"] = workflows
+        return out
+
+    # ── Omni Flash — variable-duration r2v ─────────────────────────────────
+    async def gen_video_omni(
+        self,
+        prompt: str,
+        project_id: str,
+        ref_media_ids: list[str],
+        duration_s: int,
+        aspect_ratio: str = "VIDEO_ASPECT_RATIO_PORTRAIT",
+        paygate_tier: Optional[str] = None,
+        seed: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Kick off Omni Flash video generation. Distinct from Veo i2v —
+        uses /video:batchAsyncGenerateVideoReferenceImages with a
+        referenceImages[] payload + per-duration model key.
+
+        Returns ``{raw, operation_names}`` on success or ``{raw, error}``
+        on failure. Polls via the shared ``check_async`` path — Omni
+        operations come back in the same shape as Veo's.
+
+        ``ref_media_ids`` MUST be non-empty (Omni requires at least one
+        asset reference; the model is reference-conditioned, not text-only).
+        ``duration_s`` ∈ {4,6,8,10}.
+        ``aspect_ratio`` ∈ {PORTRAIT, LANDSCAPE} (no SQUARE per owner).
+        ``paygate_tier`` required — same as gen_video.
+        """
+        if paygate_tier is None:
+            raise ValueError("paygate_tier is required")
+        if aspect_ratio not in OMNI_FLASH_VALID_ASPECTS:
+            return {
+                "raw": None,
+                "error": f"omni_aspect_unsupported_{aspect_ratio}",
+            }
+        cleaned_refs = [m for m in (ref_media_ids or []) if isinstance(m, str) and m]
+        if not cleaned_refs:
+            return {"raw": None, "error": "missing_ref_media_ids"}
+        try:
+            model_key = resolve_omni_flash_model(duration_s)
+        except ValueError as exc:
+            return {"raw": None, "error": str(exc)[:200]}
+
+        ts = int(time.time() * 1000)
+        used_seed = seed if seed is not None else ts % 1_000_000
+        ctx = _client_context(project_id, paygate_tier)
+        request_item = {
+            "aspectRatio": aspect_ratio,
+            "textInput": {"structuredPrompt": {"parts": [{"text": prompt}]}},
+            "videoModelKey": model_key,
+            "seed": used_seed,
+            "metadata": {},
+            "referenceImages": [
+                {"mediaId": mid, "imageUsageType": "IMAGE_USAGE_TYPE_ASSET"}
+                for mid in cleaned_refs
+            ],
+        }
+        body = {
+            "mediaGenerationContext": {
+                "batchId": str(uuid.uuid4()),
+                # Omni's V2 config flags silent-audio outputs as failures
+                # so the caller can retry with a different prompt instead
+                # of getting back a silently-degraded video.
+                "audioFailurePreference": "BLOCK_SILENCED_VIDEOS",
+            },
+            "clientContext": {**ctx, "sessionId": f";{ts}"},
+            "requests": [request_item],
+            "useV2ModelConfig": True,
+        }
+
+        resp = await self._client.api_request(
+            url=VIDEO_OMNI_URL,
+            method="POST",
+            headers=dict(_API_HEADERS),
+            body=body,
+            captcha_action=CAPTCHA_VIDEO,
+        )
+        if isinstance(resp, dict) and resp.get("error"):
+            return {"raw": resp, "error": resp["error"]}
+        inner_err = _extract_inner_api_error(resp)
+        if inner_err:
+            return {"raw": resp, "error": inner_err}
+
+        op_names = extract_operation_names(resp)
+        if not op_names:
+            return {"raw": resp, "error": "no_operations_in_response"}
+        out: dict[str, Any] = {"raw": resp, "operation_names": op_names}
         workflows = extract_video_workflows(resp)
         if workflows:
             out["workflows"] = workflows

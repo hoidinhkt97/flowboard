@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useGenerationStore } from "../store/generation";
 import { useBoardStore } from "../store/board";
 import { useSettingsStore } from "../store/settings";
+import { useReferencesStore } from "../store/references";
 import { getMediaStatus, mediaUrl, type MediaStatus } from "../api/client";
 import { countryLabel, vibeLabel } from "../constants/character";
 
@@ -24,6 +25,15 @@ const VIDEO_QUALITY_LABELS: Record<string, string> = {
   lite: "Lite",
   fast: "Fast",
   quality: "Quality",
+  lite_relaxed: "Lite (Low Priority)",
+  // Omni Flash dispatches stamp the per-duration model key directly
+  // (resolve_omni_flash_model: abra_r2v_4s / 6s / 8s / 10s). Map all
+  // four to a single "Omni Flash · Ns" label so the detail panel
+  // surfaces the actual duration variant that ran.
+  abra_r2v_4s: "Omni Flash · 4s",
+  abra_r2v_6s: "Omni Flash · 6s",
+  abra_r2v_8s: "Omni Flash · 8s",
+  abra_r2v_10s: "Omni Flash · 10s",
 };
 
 /** Format Flow's aspect-ratio enum to the human label shown on the node
@@ -77,6 +87,11 @@ export function ResultViewer() {
   const [mediaReady, setMediaReady] = useState(false);
   const [cacheKey, setCacheKey] = useState(0);
   const [status, setStatus] = useState<MediaStatus | null>(null);
+  // Save-to-library state. MUST live above the `if (!data) return null`
+  // early-return below — React's Rules of Hooks require all hooks to be
+  // called unconditionally on every render in the same order.
+  const [savedFlash, setSavedFlash] = useState(false);
+  const [saving, setSaving] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<Element | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -390,6 +405,46 @@ export function ResultViewer() {
     openGenerationDialog(newRfId, data?.prompt ?? "");
   }
 
+  // Save the currently-viewed variant to the cross-board Reference
+  // library. Backend POST is idempotent on media_id, so multi-clicking
+  // is safe — we still flip the button to "Saved" for 1.5s for feedback.
+  // (State declared at the top of the component to satisfy Rules of Hooks.)
+
+  async function handleSaveToLibrary() {
+    if (!rfId || !data || !currentMediaId || saving) return;
+    setSaving(true);
+    try {
+      const kind: "image" | "character" | "visual_asset" | "storyboard_shot" =
+        data.type === "Storyboard"
+          ? "storyboard_shot"
+          : data.type === "character"
+            ? "character"
+            : data.type === "visual_asset"
+              ? "visual_asset"
+              : "image";
+      await useReferencesStore.getState().save({
+        media_id: currentMediaId,
+        kind,
+        ai_brief: typeof data.aiBrief === "string" ? data.aiBrief : null,
+        aspect_ratio:
+          typeof data.aspectRatio === "string" ? data.aspectRatio : null,
+        label:
+          typeof data.aiBrief === "string"
+            ? data.aiBrief.slice(0, 80)
+            : `#${data.shortId}`,
+        source_board_id: useBoardStore.getState().boardId,
+        source_node_short_id:
+          typeof data.shortId === "string" ? data.shortId : null,
+      });
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 1500);
+    } catch {
+      // Surfaced via store.error
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div
       className="result-viewer-backdrop"
@@ -632,6 +687,21 @@ export function ResultViewer() {
               }
             >
               New variant +
+            </button>
+            <button
+              className={
+                "result-viewer__btn result-viewer__btn--save"
+                + (savedFlash ? " result-viewer__btn--saved" : "")
+              }
+              onClick={handleSaveToLibrary}
+              disabled={!currentMediaId || saving}
+              title={
+                !currentMediaId
+                  ? "Wait for the generation to finish"
+                  : "Save this variant to the cross-board Reference library"
+              }
+            >
+              {savedFlash ? "★ Saved" : saving ? "…" : "★ Save to library"}
             </button>
             {projectId ? (
               <a

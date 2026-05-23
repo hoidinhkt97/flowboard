@@ -17,28 +17,16 @@ import {
 
 export type { NodeType };
 
-export type NodeStatus = "idle" | "queued" | "running" | "done" | "error" | "partial";
+export type NodeStatus = "idle" | "queued" | "running" | "done" | "error";
 
-// Storyboard — see .omc/plans/storyboard-image-node.md §4.1.
-// Each shot is either a root (parentShotIdx=null → gen_image) or a
-// continuation (parentShotIdx=j<idx → edit_image(base=shots[j].mediaId)).
-// Sibling continuations dispatch in parallel after their parent finishes.
-export type ShotStatus =
-  | "idle"
-  | "queued"
-  | "running"
-  | "done"
-  | "error"
-  | "blocked"; // parent failed → cannot dispatch until parent retried
-
-export interface StoryboardShot {
-  idx: number;
-  prompt: string;
-  parentShotIdx: number | null;
-  mediaId?: string;
-  status: ShotStatus;
-  error?: string;
-}
+// Storyboard grid options.
+//   2x2 → 4 panels (square)
+//   2x3 → 6 panels (rectangular: 2×3 on landscape, 3×2 on portrait)
+//   2x4 → 8 panels (rectangular: 2×4 on landscape, 4×2 on portrait)
+// The rows/cols mapping happens at prompt-build time based on the
+// node's aspectRatio — see resolveStoryboardLayout in
+// frontend/src/lib/storyboardPrompt.ts.
+export type StoryboardGrid = "2x2" | "2x3" | "2x4";
 
 export interface FlowboardNodeData extends Record<string, unknown> {
   type: NodeType;
@@ -99,10 +87,13 @@ export interface FlowboardNodeData extends Record<string, unknown> {
   charVibe?: string;
   charGender?: string;
   error?: string;
-  // Storyboard-only fields (type === "Storyboard"). See plan §4.1.
-  shots?: StoryboardShot[];
-  shotCount?: number; // 1..8; mirrors shots.length
-  narrativeSeed?: string; // user free-text feeding the planner
+  // Storyboard layout. The Storyboard node is now a thin image-node
+  // wrapper that generates a single composite using a locked prompt
+  // template `Create visual storyboard for "<topic>" as SINGLE IMAGE
+  // arranged in a NxN layout (N rows, N columns)`. Default `3x3` when
+  // missing (true for fresh nodes + legacy pre-1.2.15 nodes whose
+  // multi-shot data is now ignored).
+  storyboardGrid?: StoryboardGrid;
 }
 
 export type FlowNode = Node<FlowboardNodeData>;
@@ -291,6 +282,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
           charCountry: n.data["charCountry"] as string | undefined,
           charVibe: n.data["charVibe"] as string | undefined,
           charGender: n.data["charGender"] as string | undefined,
+          storyboardGrid: n.data["storyboardGrid"] as StoryboardGrid | undefined,
         },
       }));
 
@@ -346,6 +338,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
           charCountry: n.data["charCountry"] as string | undefined,
           charVibe: n.data["charVibe"] as string | undefined,
           charGender: n.data["charGender"] as string | undefined,
+          storyboardGrid: n.data["storyboardGrid"] as StoryboardGrid | undefined,
         },
       }));
       const edges: Edge[] = detail.edges.map(edgeFromDto);
@@ -428,6 +421,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
           charCountry: n.data["charCountry"] as string | undefined,
           charVibe: n.data["charVibe"] as string | undefined,
           charGender: n.data["charGender"] as string | undefined,
+          storyboardGrid: n.data["storyboardGrid"] as StoryboardGrid | undefined,
           error: n.data["error"] as string | undefined,
         },
       }));
@@ -479,8 +473,12 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       };
       set((s) => ({ nodes: [...s.nodes, node] }));
       return node.id;
-    } catch {
-      // surface silently for now
+    } catch (err) {
+      // Surface to console so the next "I clicked Add but nothing
+      // appeared" report has a breadcrumb in DevTools instead of an
+      // empty canvas — a 422 here usually means the backend's NodeType
+      // literal is out of sync with the frontend's NodeType union.
+      console.error("addNodeOfType failed", { type, err });
     }
     return null;
   },

@@ -72,12 +72,6 @@ const VIDEO_QUALITIES: {
     hint: "Same Lite checkpoint, low-priority queue — 0 credits. Slower turnaround when Flow is busy.",
     ultraOnly: true,
   },
-  {
-    key: "fast_relaxed",
-    label: "Veo 3.1 Fast (Low Priority)",
-    hint: "Same Fast checkpoint, low-priority queue — 0 credits. Slower turnaround when Flow is busy.",
-    ultraOnly: true,
-  },
 ];
 
 interface SettingsPanelProps {
@@ -99,6 +93,8 @@ export function SettingsPanel({ open, onClose, onLogout, logoutPending }: Settin
   const setImageModel = useSettingsStore((s) => s.setImageModel);
   const videoQuality = useSettingsStore((s) => s.videoQuality);
   const setVideoQuality = useSettingsStore((s) => s.setVideoQuality);
+  const videoModel = useSettingsStore((s) => s.videoModel);
+  const setVideoModel = useSettingsStore((s) => s.setVideoModel);
 
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -174,28 +170,32 @@ export function SettingsPanel({ open, onClose, onLogout, logoutPending }: Settin
         </div>
       </div>
 
+      {/* Single unified Video model picker — flat list of every option
+          (Veo tiers + Omni Flash). Selecting a Veo row stamps both
+          videoModel="veo" + the matching quality; selecting Omni Flash
+          stamps videoModel="omni_flash" (duration is picked per dispatch
+          in the GenerationDialog). */}
       <div className="settings-panel__section">
         <div className="settings-panel__label">Video model</div>
         <div className="settings-panel__radio-group">
           {VIDEO_QUALITIES.map((q) => {
-            // *_relaxed variants are Ultra-only — Pro users picking
-            // either would silently fall back to Fast on the backend
-            // (no Tier 1 mapping in VIDEO_MODEL_KEYS). Disable the
-            // option here so the UI never lies about which checkpoint
-            // is actually being dispatched.
             const locked = q.ultraOnly && tier !== "PAYGATE_TIER_TWO";
+            const checked = videoModel === "veo" && videoQuality === q.key;
             return (
               <label
                 key={q.key}
-                className={`settings-panel__radio${videoQuality === q.key ? " settings-panel__radio--active" : ""}${locked ? " settings-panel__radio--locked" : ""}`}
+                className={`settings-panel__radio${checked ? " settings-panel__radio--active" : ""}${locked ? " settings-panel__radio--locked" : ""}`}
               >
                 <input
                   type="radio"
-                  name="video-quality"
-                  value={q.key}
-                  checked={videoQuality === q.key}
+                  name="video-model"
+                  value={`veo:${q.key}`}
+                  checked={checked}
                   disabled={locked}
-                  onChange={() => setVideoQuality(q.key)}
+                  onChange={() => {
+                    setVideoModel("veo");
+                    setVideoQuality(q.key);
+                  }}
                 />
                 <div>
                   <div className="settings-panel__radio-label">
@@ -209,6 +209,27 @@ export function SettingsPanel({ open, onClose, onLogout, logoutPending }: Settin
               </label>
             );
           })}
+          <label
+            className={`settings-panel__radio${videoModel === "omni_flash" ? " settings-panel__radio--active" : ""}`}
+          >
+            <input
+              type="radio"
+              name="video-model"
+              value="omni_flash"
+              checked={videoModel === "omni_flash"}
+              onChange={() => setVideoModel("omni_flash")}
+            />
+            <div>
+              <div className="settings-panel__radio-label">
+                Omni Flash (r2v)
+              </div>
+              <div className="settings-panel__radio-hint">
+                Reference-image to video. Variable duration (4 / 6 / 8 / 10s)
+                picked per dispatch — 15 / 20 / 25 / 30 credits. Portrait +
+                landscape supported.
+              </div>
+            </div>
+          </label>
         </div>
       </div>
 

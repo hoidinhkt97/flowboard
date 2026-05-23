@@ -111,7 +111,7 @@ export function getHealth() {
 // ── DTOs ────────────────────────────────────────────────────────────────────
 
 export type NodeType = "character" | "image" | "video" | "prompt" | "note" | "visual_asset" | "Storyboard";
-export type NodeStatus = "idle" | "queued" | "running" | "done" | "error" | "partial";
+export type NodeStatus = "idle" | "queued" | "running" | "done" | "error";
 
 export interface Board {
   id: number;
@@ -875,4 +875,40 @@ export async function deleteReference(id: number): Promise<void> {
   if (!res.ok) {
     throw new Error(`deleteReference: ${res.status} ${res.statusText}`);
   }
+}
+
+// ── Flow project sync (local → Flow, one direction) ───────────────────────
+
+export interface BoardFlowStatus {
+  board_id: number;
+  board_name: string;
+  flow_project_id: string | null;
+  exists_on_flow: boolean;
+}
+
+export interface SyncStatusResponse {
+  board_status: BoardFlowStatus[];
+}
+
+export interface SyncUpAction {
+  board_id: number;
+  board_name: string;
+  old_flow_project_id: string | null;
+  new_flow_project_id: string | null;
+  status: "created" | "rebound" | "failed";
+  error: string | null;
+}
+
+export interface SyncUpResponse {
+  synced: SyncUpAction[];
+  failed: SyncUpAction[];
+  total_boards: number;
+}
+
+export function getFlowSyncStatus(): Promise<SyncStatusResponse> {
+  return api<SyncStatusResponse>("/api/flow/projects");
+}
+
+export function syncBoardsUpToFlow(): Promise<SyncUpResponse> {
+  return api<SyncUpResponse>("/api/flow/projects/sync-up", { method: "POST" });
 }

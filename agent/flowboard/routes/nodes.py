@@ -5,12 +5,23 @@ from pydantic import BaseModel, Field
 from sqlmodel import select
 
 from flowboard.db import get_session
-from flowboard.db.models import Board, Edge, Node
+from flowboard.db.models import Asset, Board, Edge, Node, Request
 from flowboard.short_id import generate_unique_short_id
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 
-NodeType = Literal["character", "image", "video", "prompt", "note", "visual_asset"]
+NodeType = Literal[
+    "character",
+    "image",
+    "video",
+    "prompt",
+    "note",
+    "visual_asset",
+    # Storyboard = thin image-node wrapper. Backend treats it the same as
+    # `image` for storage / dispatch — see frontend/src/lib/storyboardPrompt.ts
+    # for the template that drives gen_image.
+    "Storyboard",
+]
 NodeStatus = Literal["idle", "queued", "running", "done", "error"]
 
 _COORD_MIN = -1_000_000.0
@@ -112,10 +123,40 @@ def update_node(node_id: int, body: NodeUpdate):
 
 @router.delete("/{node_id}")
 def delete_node(node_id: int):
+    """Delete a node + cascade.
+
+    Edges are owned by the graph — delete them outright.
+    Request + Asset rows are *historical* (activity feed, media cache)
+    and have a nullable `node_id` FK. Detach them (set node_id=NULL)
+    rather than delete, so:
+      - the activity feed still shows the historical generation entries
+      - saved References pointing at this node's media keep working
+        (Asset row survives, and `/media/{id}` still resolves to the
+        cached file on disk).
+
+    Skipping this detach step caused a FOREIGN KEY constraint failure
+    that aborted the whole transaction — the user saw the node vanish
+    locally (optimistic via applyNodeChanges) but reload restored it
+    because the backend never actually deleted it.
+    """
     with get_session() as s:
         node = s.get(Node, node_id)
         if not node:
             raise HTTPException(404, "node not found")
+        # Detach historical children FIRST so the FK constraint is satisfied.
+        orphan_requests = s.exec(
+            select(Request).where(Request.node_id == node_id)
+        ).all()
+        for r in orphan_requests:
+            r.node_id = None
+            s.add(r)
+        orphan_assets = s.exec(
+            select(Asset).where(Asset.node_id == node_id)
+        ).all()
+        for a in orphan_assets:
+            a.node_id = None
+            s.add(a)
+        # Edges go with the node.
         edges = s.exec(
             select(Edge).where((Edge.source_id == node_id) | (Edge.target_id == node_id))
         ).all()
@@ -123,4 +164,9 @@ def delete_node(node_id: int):
             s.delete(e)
         s.delete(node)
         s.commit()
-        return {"ok": True, "deleted_edges": [e.id for e in edges]}
+        return {
+            "ok": True,
+            "deleted_edges": [e.id for e in edges],
+            "detached_requests": len(orphan_requests),
+            "detached_assets": len(orphan_assets),
+        }

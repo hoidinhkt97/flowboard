@@ -1,6 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { useGenerationStore } from "../store/generation";
-import { useBoardStore } from "../store/board";
+import { useBoardStore, type StoryboardGrid } from "../store/board";
+import {
+  STORYBOARD_GRIDS,
+  buildStoryboardPrompt,
+  buildStoryboardVideoPrompt,
+  normaliseStoryboardGrid,
+  totalPanels,
+} from "../lib/storyboardPrompt";
+import {
+  useSettingsStore,
+  OMNI_FLASH_CREDIT_COST,
+  OMNI_FLASH_DURATIONS,
+  type OmniFlashDuration,
+  type VideoQuality,
+} from "../store/settings";
 import {
   autoPrompt as autoPromptApi,
   autoPromptBatch as autoPromptBatchApi,
@@ -17,7 +31,14 @@ import {
   type VibeKey,
 } from "../constants/character";
 
-const REF_SOURCE_TYPES = new Set(["character", "image", "visual_asset"]);
+const REF_SOURCE_TYPES = new Set([
+  "character",
+  "image",
+  "visual_asset",
+  // Storyboard outputs are first-class refs — they're composite images
+  // that can feed downstream image / Omni-video / character nodes.
+  "Storyboard",
+]);
 
 function buildCharacterPrompt(
   gender: GenderKey | null,
@@ -85,6 +106,31 @@ const CAMERA_MOVEMENTS = [
 
 type CameraKey = (typeof CAMERA_MOVEMENTS)[number]["key"];
 
+// Video model picker shown in the dialog — mirrors the unified list from
+// SettingsPanel so the user can override the model per-dispatch without
+// opening the gear menu. Selecting a chip mutates the global settings
+// store (same pattern as the Omni-duration chips below), so the choice
+// is sticky for subsequent dispatches.
+// Each chip is either a Veo quality combo or Omni Flash. `ultraOnly`
+// chips are locked when the detected paygate tier isn't TIER_TWO —
+// the backend would silently fall back to Fast otherwise.
+type VeoChip = {
+  kind: "veo";
+  quality: VideoQuality;
+  label: string;
+  ultraOnly: boolean;
+};
+type OmniChip = { kind: "omni"; label: string };
+type VideoModelChip = VeoChip | OmniChip;
+
+const VIDEO_MODEL_CHIPS: readonly VideoModelChip[] = [
+  { kind: "veo", quality: "lite", label: "Veo 3.1 Lite", ultraOnly: false },
+  { kind: "veo", quality: "fast", label: "Veo 3.1 Fast", ultraOnly: false },
+  { kind: "veo", quality: "quality", label: "Veo 3.1 Quality", ultraOnly: false },
+  { kind: "veo", quality: "lite_relaxed", label: "Veo 3.1 Lite (Low Priority)", ultraOnly: true },
+  { kind: "omni", label: "Omni Flash" },
+];
+
 function cameraInstruction(key: CameraKey): string {
   return CAMERA_MOVEMENTS.find((c) => c.key === key)?.instruction ?? "";
 }
@@ -144,21 +190,37 @@ function pickDefaultAspect(
   return "IMAGE_ASPECT_RATIO_PORTRAIT";
 }
 
+// Small "ⓘ" affordance for moving static help-text out of the layout
+// into a hover tooltip — keeps the dialog short while preserving the
+// information for users who want it. Native `title` (plain text) is
+// enough; we don't need rich markup in tooltips.
+function InfoTip({ tip }: { tip: string }) {
+  return (
+    <span
+      className="gen-dialog__info-tip"
+      title={tip}
+      aria-label={tip}
+      role="img"
+    >
+      ⓘ
+    </span>
+  );
+}
+
 export function GenerationDialog() {
   const openDialog = useGenerationStore((s) => s.openDialog);
   const closeGenerationDialog = useGenerationStore((s) => s.closeGenerationDialog);
   const dispatchGeneration = useGenerationStore((s) => s.dispatchGeneration);
-  const dispatchStoryboard = useGenerationStore((s) => s.dispatchStoryboard);
   const nodes = useBoardStore((s) => s.nodes);
 
   const [prompt, setPrompt] = useState(openDialog.prompt);
   const [aspectRatio, setAspectRatio] = useState<AspectKey>("IMAGE_ASPECT_RATIO_LANDSCAPE");
   const [variants, setVariants] = useState(1);
   const [camera, setCamera] = useState<CameraKey>("static");
-  // Storyboard shot count (1..8). Independent from `variants` because
-  // the storyboard request maps to a continuity tree, not pose-distinct
-  // variants of one image. Default 4 (one Phase A batch, no Phase B).
-  const [shotCount, setShotCount] = useState(4);
+  // Storyboard layout. The node dispatches via the standard image
+  // handler with a locked template prompt wrapping the user's topic
+  // into a single composite NxN grid. See lib/storyboardPrompt.ts.
+  const [storyboardGrid, setStoryboardGrid] = useState<StoryboardGrid>("2x2");
 
   // Character builder state — only used when targetType === "character".
   const [charGender, setCharGender] = useState<GenderKey | null>(null);
@@ -191,10 +253,30 @@ export function GenerationDialog() {
   const nodeCount = nodes.length;
   const edges = useBoardStore((s) => s.edges);
 
+  // Hooks MUST be called unconditionally on every render — pull
+  // videoModel out first, derive the boolean after.
+  const videoModelFamily = useSettingsStore((s) => s.videoModel);
+  const videoQuality = useSettingsStore((s) => s.videoQuality);
+  const setVideoModel = useSettingsStore((s) => s.setVideoModel);
+  const setVideoQuality = useSettingsStore((s) => s.setVideoQuality);
+  const omniFlashDuration = useSettingsStore((s) => s.omniFlashDuration);
+  const setOmniFlashDuration = useSettingsStore(
+    (s) => s.setOmniFlashDuration,
+  );
+  // Auto-detected paygate tier (PAYGATE_TIER_ONE / TIER_TWO). Used to
+  // lock the Ultra-only model chips (lite_relaxed) for Pro users — same
+  // gating as the SettingsPanel.
+  const paygateTier = useGenerationStore((s) => s.paygateTier);
+
   const targetType = node?.data.type ?? "image";
   const isVideo = targetType === "video";
   const isCharacter = targetType === "character";
   const isStoryboard = targetType === "Storyboard";
+  // Omni Flash is a video model but with image-target semantics: it
+  // takes ingredients (multi reference images), NOT a single i2v start
+  // frame. So the dialog should show the same "Source references" chip
+  // list that image targets use, and hide Veo's source-image selector.
+  const isOmniVideo = isVideo && videoModelFamily === "omni_flash";
   // Prompt nodes are text-only — clicking Generate runs auto_prompt
   // synthesis from upstream context and writes the result back to
   // node.data.prompt. No image dispatch, no aspect/variants.
@@ -206,6 +288,24 @@ export function GenerationDialog() {
   // legacy single-source path.
   const sourceEdge = isVideo ? edges.find((e) => e.target === rfId) : undefined;
   const sourceNode = sourceEdge ? nodes.find((n) => n.id === sourceEdge.source) : undefined;
+
+  // Storyboard → video: when ANY upstream node is a Storyboard composite,
+  // the motion prompt MUST follow a fixed template that asks Flow to
+  // animate the panels in order. 2x2→4 frames; 2x3→6; 2x4→8. Other
+  // refs (character / location / visual_asset) still flow as normal —
+  // the prompt itself is what's locked. Pick the first storyboard
+  // upstream's grid (multi-storyboard edges are an edge case we don't
+  // optimize for).
+  const storyboardUpstream = isVideo
+    ? edges
+        .filter((e) => e.target === rfId)
+        .map((e) => nodes.find((n) => n.id === e.source))
+        .find((n) => n?.data.type === "Storyboard")
+    : undefined;
+  const hasStoryboardUpstream = !!storyboardUpstream;
+  const storyboardUpstreamGrid = normaliseStoryboardGrid(
+    storyboardUpstream?.data.storyboardGrid,
+  );
   const sourceMediaId = sourceNode?.data.mediaId ?? null;
   // Drop null placeholders from the upstream variant list — partial-
   // batch results may carry them, but downstream dispatch needs a
@@ -231,7 +331,10 @@ export function GenerationDialog() {
   // separate list from refSourceNodes; the dialog renders them as a
   // text-only chip alongside image refs so the user can SEE that a
   // Prompt node is influencing the gen.
-  const promptSourceNodes = !isVideo && rfId
+  // Both image targets AND Omni-video targets use the ingredient chip
+  // list (multi-ref upstream → one chip per edge). Veo i2v video has
+  // its own single-source-with-variant-batch picker below.
+  const promptSourceNodes = (!isVideo || isOmniVideo) && rfId
     ? edges
         .filter((e) => e.target === rfId)
         .map((e) => {
@@ -243,7 +346,7 @@ export function GenerationDialog() {
         .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
     : [];
 
-  const refSourceNodes = !isVideo && rfId
+  const refSourceNodes = (!isVideo || isOmniVideo) && rfId
     ? edges
         .filter((e) => e.target === rfId)
         .map((e) => {
@@ -285,9 +388,26 @@ export function GenerationDialog() {
   // Reset form when dialog opens for a different node
   useEffect(() => {
     if (rfId !== null) {
-      setPrompt(openDialog.prompt);
+      // Default: whatever prompt the caller seeded (last-saved on the node,
+      // or empty for a fresh gen). Storyboard→video overrides this below
+      // with the locked motion template.
+      let initialPrompt = openDialog.prompt;
       const openNode = nodes.find((n) => n.id === rfId);
       const openNodeType = openNode?.data.type ?? "image";
+      if (openNodeType === "video") {
+        const sb = useBoardStore
+          .getState()
+          .edges.filter((e) => e.target === rfId)
+          .map((e) =>
+            useBoardStore.getState().nodes.find((n) => n.id === e.source),
+          )
+          .find((n) => n?.data.type === "Storyboard");
+        if (sb) {
+          const g = normaliseStoryboardGrid(sb.data.storyboardGrid);
+          initialPrompt = buildStoryboardVideoPrompt(g);
+        }
+      }
+      setPrompt(initialPrompt);
       // Character → always 1:1 portrait headshot (its own opinionated
       // default; ignores upstream aspect because character is the source).
       // Image / video → match upstream aspect when available; fall back to
@@ -313,6 +433,12 @@ export function GenerationDialog() {
       setAspectRatio(nextAspect);
       setVariants(1);
       setCamera("static");
+      // Hydrate storyboard grid from existing node data when reopening.
+      // Fresh nodes + legacy values ("3x3" from 1.2.15-1.2.18) → "2x2".
+      const openNodeData = useBoardStore
+        .getState()
+        .nodes.find((n) => n.id === rfId)?.data;
+      setStoryboardGrid(normaliseStoryboardGrid(openNodeData?.storyboardGrid));
       setCharGender(null);
       setCharCountry(null);
       setCharVibe("clean");
@@ -451,15 +577,32 @@ export function GenerationDialog() {
       return;
     }
     if (isStoryboard) {
-      // For Storyboard, the prompt textarea is the narrative seed
-      // ("đi du lich + show off áo", "unbox + try-on at home", …).
-      // The planner LLM expands it into N per-shot beats with
-      // continuity hints. Empty seed is allowed — planner will improvise
-      // from upstream refs alone.
-      dispatchStoryboard(rfId, {
-        shotCount,
-        narrativeSeed: prompt,
+      // Storyboard is a thin image-node wrapper. The user's prompt
+      // textarea is the TOPIC; we wrap it in the locked template and
+      // dispatch via the standard image path — Flow renders a single
+      // composite NxN grid that visually narrates the topic.
+      const wrapped = buildStoryboardPrompt(
+        prompt,
+        storyboardGrid,
         aspectRatio,
+      );
+      // Persist the chosen grid + topic on the node so reload shows
+      // the same settings and `StoryboardBody` can render the grid badge.
+      useBoardStore.getState().updateNodeData(rfId, {
+        storyboardGrid,
+        aiBrief: prompt,
+      });
+      const dbId = parseInt(rfId, 10);
+      if (!isNaN(dbId)) {
+        patchNode(dbId, {
+          data: { storyboardGrid, aiBrief: prompt },
+        }).catch(() => {});
+      }
+      dispatchGeneration(rfId, {
+        prompt: wrapped,
+        aspectRatio,
+        kind: "image",
+        variantCount: variants,
       });
       closeGenerationDialog();
       return;
@@ -606,9 +749,13 @@ export function GenerationDialog() {
   const isWorking = autoBuilding || nodeLLMBusy;
 
   // Both image and video allow empty prompt — we'll auto-synth on submit.
-  // Video needs at least one selected source variant.
+  // Veo i2v needs at least one selected source variant; Omni Flash
+  // needs at least one ingredient (any upstream image-bearing node).
+  // Other targets just need the LLM not be busy.
   const canGenerate = isCharacter
     ? charGender !== null || charCountry !== null || charExtras.trim().length > 0
+    : isOmniVideo
+    ? refSourceNodes.length > 0 && !isWorking
     : isVideo
     ? selectedSourceIdx.size > 0 && !isWorking
     : !isWorking;
@@ -688,7 +835,22 @@ export function GenerationDialog() {
                   : "Bỏ trống để tự generate prompt từ upstream nodes ✨"
               }
               disabled={isWorking}
+              readOnly={hasStoryboardUpstream}
+              title={
+                hasStoryboardUpstream
+                  ? "Locked: storyboard motion template (animates panels in order)"
+                  : undefined
+              }
             />
+            {hasStoryboardUpstream && (
+              <p className="gen-dialog__hint gen-dialog__hint--locked">
+                🎬 <strong>Storyboard motion template</strong> — locked because an
+                upstream Storyboard node is feeding this video. Flow animates
+                the composite panels in order (frame 1 →
+                {" "}{totalPanels(storyboardUpstreamGrid)}). Other refs
+                (character / location / visual_asset) still flow through normally.
+              </p>
+            )}
             {isWorking && (
               <p className="gen-dialog__hint">
                 {node?.data.aiBriefStatus === "pending"
@@ -754,6 +916,7 @@ export function GenerationDialog() {
               <div className="gen-dialog__label-row">
                 <label className="gen-dialog__label" htmlFor="gen-char-extras">
                   Mô tả thêm (tuỳ chọn)
+                  <InfoTip tip="Prompt được auto-build: portrait headshot · vibe styling · photorealistic — tối ưu cho character reference." />
                 </label>
                 <span className="gen-dialog__char-count">{charExtras.length}/200</span>
               </div>
@@ -767,16 +930,14 @@ export function GenerationDialog() {
                 onChange={(e) => setCharExtras(e.target.value)}
                 placeholder="Tuổi, kiểu tóc, trang phục, biểu cảm…"
               />
-              <p className="gen-dialog__hint">
-                Prompt được auto-build: portrait headshot · vibe styling ·
-                photorealistic — tối ưu cho character reference.
-              </p>
             </div>
           </>
         )}
 
-        {/* Source image (video only — i2v, multi-select variants → N videos) */}
-        {isVideo && (
+        {/* Source image — Veo i2v ONLY. Omni Flash uses the ingredient
+            chip list (`refSourceNodes`) above, same shape as image
+            targets. */}
+        {isVideo && !isOmniVideo && (
           <div className="gen-dialog__field">
             <div className="gen-dialog__label-row">
               <span className="gen-dialog__label">
@@ -869,7 +1030,9 @@ export function GenerationDialog() {
             Storyboard) AND prompt-text refs. Prompt nodes don't have
             media but their text feeds the auto-prompt synth, so we
             surface them as text chips next to the thumbnails. */}
-        {!isVideo && (refSourceNodes.length > 0 || promptSourceNodes.length > 0) && (
+        {(!isVideo || isOmniVideo)
+          && (refSourceNodes.length > 0 || promptSourceNodes.length > 0)
+          && (
           <div className="gen-dialog__field">
             <span className="gen-dialog__label">
               Source references ({refSourceNodes.length + promptSourceNodes.length})
@@ -996,10 +1159,99 @@ export function GenerationDialog() {
           </div>
         )}
 
+        {/* Omni Flash duration picker — video only, when the user's
+            settings select the Omni model family. Replaces the implicit
+            ~8s Veo duration with a per-dispatch radio. Credit cost is
+            surfaced beside each option. */}
+        {isOmniVideo && (
+          <div className="gen-dialog__field">
+            <span className="gen-dialog__label">
+              Duration (Omni Flash)
+              <InfoTip tip="Omni Flash dispatches via video:batchAsyncGenerateVideoReferenceImages with the upstream image(s) as IMAGE_USAGE_TYPE_ASSET refs. Duration scales credit cost: 4s=15, 6s=20, 8s=25, 10s=30." />
+            </span>
+            <div className="aspect-chip-row">
+              {OMNI_FLASH_DURATIONS.map((d) => {
+                const active = omniFlashDuration === d;
+                return (
+                  <button
+                    key={d}
+                    type="button"
+                    className={`aspect-chip${active ? " aspect-chip--active" : ""}`}
+                    onClick={() =>
+                      setOmniFlashDuration(d as OmniFlashDuration)
+                    }
+                    title={`${d}s — ${OMNI_FLASH_CREDIT_COST[d]} credits`}
+                  >
+                    {d}s · {OMNI_FLASH_CREDIT_COST[d]}c
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Model picker (video only) — mirrors the unified list from
+            SettingsPanel. Native <select> for compactness; selecting an
+            option stamps videoModel + videoQuality on the global
+            settings store so the override sticks for the next dispatch.
+            Encode option `value` as "veo:<quality>" or "omni" so the
+            change handler can split it back into the two store fields. */}
+        {isVideo && (
+          <div className="gen-dialog__field">
+            <span className="gen-dialog__label">
+              Model
+              <InfoTip tip="Sticky — selection được lưu cho các lần dispatch sau (đồng bộ với Settings). Veo dùng i2v (1 source image); Omni Flash dùng reference ingredients (đa ảnh) với duration 4/6/8/10s chọn ở dưới." />
+            </span>
+            <select
+              className="gen-dialog__select"
+              value={
+                videoModelFamily === "omni_flash"
+                  ? "omni"
+                  : `veo:${videoQuality}`
+              }
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "omni") {
+                  setVideoModel("omni_flash");
+                  return;
+                }
+                const [, quality] = v.split(":") as ["veo", VideoQuality];
+                setVideoModel("veo");
+                setVideoQuality(quality);
+              }}
+            >
+              {VIDEO_MODEL_CHIPS.map((m) => {
+                if (m.kind === "omni") {
+                  return (
+                    <option key="omni" value="omni">
+                      Omni Flash
+                    </option>
+                  );
+                }
+                const locked =
+                  m.ultraOnly && paygateTier !== "PAYGATE_TIER_TWO";
+                return (
+                  <option
+                    key={`veo:${m.quality}`}
+                    value={`veo:${m.quality}`}
+                    disabled={locked}
+                  >
+                    {m.label}
+                    {m.ultraOnly ? " · Ultra only" : ""}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+        )}
+
         {/* Camera movement (video only) */}
         {isVideo && (
           <div className="gen-dialog__field">
-            <span className="gen-dialog__label">Camera</span>
+            <span className="gen-dialog__label">
+              Camera
+              <InfoTip tip="Static = locked-off, không zoom/pan — phù hợp e-commerce product shot. Dynamic = để auto-prompt tự quyết camera move (dolly / micro-shift / …)." />
+            </span>
             <div className="aspect-chip-row">
               {CAMERA_MOVEMENTS.map((c) => (
                 <button
@@ -1013,17 +1265,14 @@ export function GenerationDialog() {
                 </button>
               ))}
             </div>
-            <p className="gen-dialog__hint">
-              <strong>Static</strong> = locked-off, không zoom/pan — phù hợp
-              e-commerce product shot. <strong>Dynamic</strong> = để auto-prompt
-              tự quyết camera move (dolly / micro-shift / …).
-            </p>
           </div>
         )}
 
-        {/* Variants stepper — image only (not storyboard, prompt; video
-            has its own one-clip-per-source-variant flow above). */}
-        {!isVideo && !isStoryboard && !isPrompt && (
+        {/* Variants stepper — image + storyboard (storyboard reuses the
+            image dispatch path; up to 4 composite variants per request).
+            Hidden for video (its own one-clip-per-source-variant flow
+            above) and prompt nodes. */}
+        {!isVideo && !isPrompt && (
           <div className="gen-dialog__field">
             <span className="gen-dialog__label">Variants</span>
             <div className="variants-stepper">
@@ -1049,32 +1298,40 @@ export function GenerationDialog() {
           </div>
         )}
 
-        {/* Shots stepper — storyboard only. 1..8 covers the continuity-tree
-            range; planner decides how many roots vs continuations. */}
+        {/* Grid radio — storyboard only. Three options: 2x2 (4 panels),
+            2x3 (6), 2x4 (8). For 2x3 / 2x4 the rows × cols flip based on
+            the chosen aspect ratio: landscape → wide grid (e.g. 2×3),
+            portrait → tall grid (3×2). */}
         {isStoryboard && (
           <div className="gen-dialog__field">
-            <span className="gen-dialog__label">Shots</span>
-            <div className="variants-stepper">
-              <button
-                type="button"
-                disabled={shotCount <= 1}
-                aria-label="Decrease shot count"
-                onClick={() => setShotCount((v) => Math.max(1, v - 1))}
-              >
-                −
-              </button>
-              <span>{shotCount}</span>
-              <button
-                type="button"
-                disabled={shotCount >= 8}
-                aria-label="Increase shot count"
-                onClick={() => setShotCount((v) => Math.min(8, v + 1))}
-              >
-                +
-              </button>
-              <span className="variants-stepper__hint">
-                1–8 narrative beats (planner picks roots vs continuations)
-              </span>
+            <span className="gen-dialog__label">
+              Grid
+              <InfoTip tip="Storyboard renders as a SINGLE composite image — Flow draws the whole grid as one picture. The topic field above is your story (e.g. Rùa và Thỏ); the locked template wraps it for you. For 2×3 / 2×4 the rows × cols flip with the aspect ratio so panels stay readable on both landscape and portrait composites." />
+            </span>
+            <div className="aspect-chip-row">
+              {STORYBOARD_GRIDS.map((g) => {
+                const total = totalPanels(g);
+                const isPortrait = aspectRatio.includes("PORTRAIT");
+                // For symmetric 2x2 the label is just "2×2". For 2x3 /
+                // 2x4 we render the concrete rows×cols pair that Flow
+                // will receive, so the user sees orientation reflected.
+                let dimsLabel = "2×2";
+                if (g !== "2x2") {
+                  const big = g === "2x3" ? 3 : 4;
+                  dimsLabel = isPortrait ? `${big}×2` : `2×${big}`;
+                }
+                return (
+                  <button
+                    key={g}
+                    type="button"
+                    className={`aspect-chip${storyboardGrid === g ? " aspect-chip--active" : ""}`}
+                    onClick={() => setStoryboardGrid(g)}
+                    title={`${total} panels (${dimsLabel})`}
+                  >
+                    {dimsLabel} · {total} panels
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}
