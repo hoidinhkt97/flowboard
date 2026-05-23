@@ -85,21 +85,12 @@ export function launchChromeWithExtension(): void {
     return;
   }
 
-  console.log('[extension-launcher] Launching Chrome with extension:', extensionDir);
+  console.log('[extension-launcher] Launching Chrome to', FLOW_URL);
 
-  // Dedicated profile dir so --load-extension works even if Chrome is already running
-  const chromeDataDir = path.join(app.getPath('userData'), 'chrome-profile');
-  fs.mkdirSync(chromeDataDir, { recursive: true });
-
+  // Open Chrome with the user's default profile (extension already installed there)
   const child = spawn(
     chromePath,
-    [
-      `--load-extension=${extensionDir}`,
-      `--user-data-dir=${chromeDataDir}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      FLOW_URL,
-    ],
+    ['--new-window', FLOW_URL],
     { detached: true, stdio: 'ignore' }
   );
   child.unref(); // Chrome outlives the Electron app
