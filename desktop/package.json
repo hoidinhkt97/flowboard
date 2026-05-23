@@ -6,7 +6,7 @@
   "private": true,
   "scripts": {
     "build": "tsc",
-    "dev": "cross-env FLOWBOARD_DEV=1 npm run build && electron .",
+    "dev": "npm run build && cross-env FLOWBOARD_DEV=1 electron .",
     "start": "electron .",
     "test": "vitest run",
     "test:watch": "vitest",
