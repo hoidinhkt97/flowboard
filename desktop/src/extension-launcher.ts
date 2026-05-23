@@ -52,24 +52,23 @@ function getChromeUserDataDir(): string | null {
 }
 
 /**
- * Find all Chrome profile Preferences files (Default + Profile 1, Profile 2, ...).
- * Returns list of existing paths + the Default path (even if it doesn't exist yet).
+ * Find the active Chrome profile directory name by reading Local State.
+ * Falls back to "Default" if Local State is missing or unreadable.
  */
-function findChromeProfilePaths(userDataDir: string): { existing: string[]; defaultPath: string } {
-  const defaultPath = path.join(userDataDir, 'Default', 'Preferences');
-  const existing: string[] = [];
-
-  if (!fs.existsSync(userDataDir)) return { existing, defaultPath };
-
-  const profileDirs = ['Default', ...fs.readdirSync(userDataDir).filter((d) => /^Profile \d+$/.test(d))];
-  for (const dir of profileDirs) {
-    const p = path.join(userDataDir, dir, 'Preferences');
-    if (fs.existsSync(p)) {
-      existing.push(p);
-      log('INFO', `Found Chrome profile: ${p}`);
+function getActiveProfileDir(userDataDir: string): string {
+  const localStatePath = path.join(userDataDir, 'Local State');
+  try {
+    const raw = fs.readFileSync(localStatePath, 'utf-8');
+    const state = JSON.parse(raw);
+    const lastUsed = state?.profile?.last_used as string | undefined;
+    if (lastUsed) {
+      log('INFO', `Active Chrome profile from Local State: ${lastUsed}`);
+      return lastUsed;
     }
+  } catch {
+    log('INFO', 'Could not read Local State — using Default profile');
   }
-  return { existing, defaultPath };
+  return 'Default';
 }
 
 function setDeveloperModeInPrefs(prefsPath: string): void {
@@ -105,15 +104,10 @@ function enableChromeDeveloperMode(): void {
     return;
   }
 
-  const { existing, defaultPath } = findChromeProfilePaths(userDataDir);
-
-  if (existing.length > 0) {
-    for (const p of existing) setDeveloperModeInPrefs(p);
-  } else {
-    // No existing profile — create Default profile with developer mode on
-    log('INFO', `No Chrome profiles found, creating Default profile at: ${defaultPath}`);
-    setDeveloperModeInPrefs(defaultPath);
-  }
+  const profileDir = getActiveProfileDir(userDataDir);
+  const prefsPath = path.join(userDataDir, profileDir, 'Preferences');
+  log('INFO', `Target Preferences: ${prefsPath}`);
+  setDeveloperModeInPrefs(prefsPath);
 }
 
 function findChrome(): string | null {
