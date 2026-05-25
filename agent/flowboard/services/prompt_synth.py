@@ -614,7 +614,7 @@ async def auto_prompt(node_id: int, *, camera: Optional[str] = None) -> str:
         text = (text or "").strip().strip('"').strip("'")
         if not text:
             raise PromptSynthError("empty response from auto-prompt provider")
-        if len(text) > 500:
-            text = text[:500].rstrip() + "…"
+        if len(text) > 5000:
+            text = text[:5000].rstrip() + "…"
         activity.set_result({"prompt": text})
         return text
