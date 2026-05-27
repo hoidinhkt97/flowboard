@@ -15,6 +15,8 @@ jobs:
   build-macos:
     runs-on: macos-14
     timeout-minutes: 45
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
@@ -88,9 +90,7 @@ jobs:
           name: flowboard-macos-${{ github.sha }}
           path: |
             desktop/release/*.dmg
-            desktop/release/*.zip
             desktop/release/*.blockmap
-            desktop/release/latest-mac.yml
           if-no-files-found: error
           retention-days: 14
 
@@ -101,7 +101,5 @@ jobs:
           draft: true
           files: |
             desktop/release/*.dmg
-            desktop/release/*.zip
-            desktop/release/latest-mac.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
