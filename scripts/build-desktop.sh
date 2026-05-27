@@ -21,9 +21,23 @@ test -f dist/index.html || { echo "Frontend build failed"; exit 1; }
 echo ""
 echo "[2/4] Building Python agent (PyInstaller)..."
 cd "$REPO_ROOT/agent"
+# Ensure a Python virtualenv exists and use it (prefer python3)
+if command -v python3 >/dev/null 2>&1; then
+    PY=python3
+elif command -v python >/dev/null 2>&1; then
+    PY=python
+else
+    echo "No python executable found (python3 or python)"
+    exit 1
+fi
+if [ ! -d .venv ]; then
+    $PY -m venv .venv
+fi
+. .venv/bin/activate
 pip install -e . --quiet
 pip install pyinstaller --quiet
-pyinstaller flowboard-agent.spec --clean --noconfirm
+# Call PyInstaller via module to ensure the venv's PyInstaller is used
+python -m PyInstaller flowboard-agent.spec --clean --noconfirm
 test -f dist/flowboard-agent/flowboard-agent || { echo "Agent build failed"; exit 1; }
 
 # Step 3: Compile Electron TypeScript
