@@ -418,12 +418,14 @@ class FlowSDK:
             body=body,
         )
         if isinstance(resp, dict) and resp.get("error"):
+            logger.error("create_project FAILED: error=%s raw=%r", resp["error"], resp)
             return {"raw": resp, "error": resp["error"]}
 
         project_id = _extract_project_id(resp)
         out: dict[str, Any] = {"raw": resp}
         if project_id is None:
             out["error"] = "no_project_id_in_response"
+            logger.error("create_project FAILED: no_project_id_in_response raw=%r", resp)
         else:
             out["project_id"] = project_id
         return out
@@ -500,11 +502,29 @@ class FlowSDK:
             })
         body = {
             "clientContext": ctx,
-            "mediaGenerationContext": {"batchId": str(uuid.uuid4())},
+            "mediaGenerationContext": {
+                "batchId": str(uuid.uuid4()),
+                # Honour the user's Flow setting "Return silent videos" —
+                # when enabled on the Flow web UI, the server rejects any
+                # dispatch that might produce audio.  This flag tells the
+                # backend to block silent-audio outputs as failures (so the
+                # caller can retry with a different prompt) instead of
+                # silently returning a degraded video.  Matches the flag
+                # already used in gen_video_omni.
+                "audioFailurePreference": "BLOCK_SILENCED_VIDEOS",
+            },
             "requests": items,
             "useV2ModelConfig": True,
         }
 
+        t0 = time.monotonic()
+        logger.info(
+            "video_dispatch: model=%s tier=%s quality=%s aspect=%s "
+            "sources=%d prompt_len=%d batch_id=%s",
+            model_key, paygate_tier, video_quality or DEFAULT_VIDEO_QUALITY,
+            aspect_ratio, len(sources), len(prompt),
+            body.get("mediaGenerationContext", {}).get("batchId"),
+        )
         resp = await self._client.api_request(
             url=VIDEO_I2V_URL,
             method="POST",
@@ -512,20 +532,28 @@ class FlowSDK:
             body=body,
             captcha_action=CAPTCHA_VIDEO,
         )
+        rt_ms = int((time.monotonic() - t0) * 1000)
+
         if isinstance(resp, dict) and resp.get("error"):
+            logger.error("video_dispatch FAILED (transport): error=%s rt=%dms raw=%r", resp["error"], rt_ms, resp)
             return {"raw": resp, "error": resp["error"]}
         inner_err = _extract_inner_api_error(resp)
         if inner_err:
+            logger.error("video_dispatch FAILED (api): error=%s status=%s rt=%dms raw=%r", inner_err, resp.get("status"), rt_ms, resp)
             return {"raw": resp, "error": inner_err}
 
         op_names = extract_operation_names(resp)
         if not op_names:
+            data_keys = list((resp.get("data") or {}).keys()) if isinstance(resp, dict) else "not_dict"
+            logger.error("video_dispatch: no operations in response rt=%dms raw_keys=%s", rt_ms, data_keys)
             return {"raw": resp, "error": "no_operations_in_response"}
-        out: dict[str, Any] = {"raw": resp, "operation_names": op_names}
-        # NEW low-priority workflow models return `data.workflows[]` with a
-        # `primaryMediaId` per workflow instead of operations. Surface the
-        # pairing so the poller can hit `/v1/media/<id>` directly.
         workflows = extract_video_workflows(resp)
+        logger.info(
+            "video_dispatch OK: ops=%d workflows=%d rt=%dms http_status=%s",
+            len(op_names), len(workflows) if workflows else 0, rt_ms,
+            resp.get("status") if isinstance(resp, dict) else None,
+        )
+        out: dict[str, Any] = {"raw": resp, "operation_names": op_names}
         if workflows:
             out["workflows"] = workflows
         return out
@@ -597,6 +625,14 @@ class FlowSDK:
             "useV2ModelConfig": True,
         }
 
+        t0 = time.monotonic()
+        logger.info(
+            "omni_dispatch: model=%s tier=%s duration=%ds aspect=%s "
+            "refs=%d prompt_len=%d batch_id=%s",
+            model_key, paygate_tier, duration_s, aspect_ratio,
+            len(cleaned_refs), len(prompt),
+            body.get("mediaGenerationContext", {}).get("batchId"),
+        )
         resp = await self._client.api_request(
             url=VIDEO_OMNI_URL,
             method="POST",
@@ -604,17 +640,27 @@ class FlowSDK:
             body=body,
             captcha_action=CAPTCHA_VIDEO,
         )
+        rt_ms = int((time.monotonic() - t0) * 1000)
         if isinstance(resp, dict) and resp.get("error"):
+            logger.error("omni_dispatch FAILED (transport): error=%s rt=%dms raw=%r", resp["error"], rt_ms, resp)
             return {"raw": resp, "error": resp["error"]}
         inner_err = _extract_inner_api_error(resp)
         if inner_err:
+            logger.error("omni_dispatch FAILED (api): error=%s status=%s rt=%dms raw=%r", inner_err, resp.get("status"), rt_ms, resp)
             return {"raw": resp, "error": inner_err}
 
         op_names = extract_operation_names(resp)
         if not op_names:
+            data_keys = list((resp.get("data") or {}).keys()) if isinstance(resp, dict) else "not_dict"
+            logger.error("omni_dispatch: no operations in response rt=%dms raw_keys=%s", rt_ms, data_keys)
             return {"raw": resp, "error": "no_operations_in_response"}
-        out: dict[str, Any] = {"raw": resp, "operation_names": op_names}
         workflows = extract_video_workflows(resp)
+        logger.info(
+            "omni_dispatch OK: ops=%d workflows=%d rt=%dms http_status=%s",
+            len(op_names), len(workflows) if workflows else 0, rt_ms,
+            resp.get("status") if isinstance(resp, dict) else None,
+        )
+        out: dict[str, Any] = {"raw": resp, "operation_names": op_names}
         if workflows:
             out["workflows"] = workflows
         return out
@@ -642,6 +688,7 @@ class FlowSDK:
         # don't dispatch them to batchCheckAsync (Flow would 400).
         workflow_names = {w["name"] for w in (workflows or []) if isinstance(w, dict) and w.get("name")}
         old_names = [n for n in operation_names if n not in workflow_names]
+        t0 = time.monotonic()
         if old_names:
             body = {
                 "operations": [
@@ -655,6 +702,7 @@ class FlowSDK:
                 body=body,
             )
             if isinstance(raw_old, dict) and raw_old.get("error"):
+                logger.warning("video_poll (ops) FAILED: error=%s ops=%s", raw_old["error"], old_names)
                 return {"raw": raw_old, "error": raw_old["error"]}
             ops_summary.extend(
                 extract_video_operations(raw_old, requested=old_names)
@@ -664,6 +712,21 @@ class FlowSDK:
         if workflows:
             wf_summary, raw_workflows = await self._poll_workflows(workflows)
             ops_summary.extend(wf_summary)
+
+        rt_ms = int((time.monotonic() - t0) * 1000)
+
+        # Log per-op status transitions so operators can see when an op
+        # flips from PENDING → SUCCESSFUL / FAILED without grepping the raw payload.
+        for op in ops_summary:
+            name = op.get("name", "?")[:12]
+            done = op.get("done")
+            status = op.get("status")
+            err = op.get("error")
+            media_count = len(op.get("media_entries") or [])
+            logger.info(
+                "video_poll_result: op=%s done=%s status=%s err=%s media=%d rt=%dms",
+                name, done, status, err, media_count, rt_ms,
+            )
 
         # Preserve the original input order so callers (worker) can keep
         # positional alignment with their per-op state.
@@ -732,16 +795,41 @@ class FlowSDK:
                 )
                 continue
             status_code = resp.get("status")
+            # A 5xx is a transient backend hiccup, not a verdict on the
+            # generation. Flow's media endpoint returns "Internal error
+            # encountered." (500) while the render backend is busy — most
+            # often on the FIRST poll, seconds after dispatch, long before
+            # veo3 has finished rendering. Treat it like the 404-mid-render
+            # case below: keep polling. The worker bounds this with
+            # VIDEO_POLL_MAX_CYCLES + a 5-minute deadline, so a genuinely
+            # stuck render still terminates — it just isn't aborted on the
+            # first hiccup.
+            if isinstance(status_code, int) and status_code >= 500:
+                inner = _extract_inner_api_error(resp)
+                logger.warning(
+                    "workflow poll transient %s: wf=%s media=%s detail=%s (keep polling)",
+                    status_code, name[:12], mid[:8], inner or "?",
+                )
+                ops_summary.append(
+                    {"name": name, "done": False, "media_entries": [], "status": None, "error": None}
+                )
+                continue
             if isinstance(status_code, int) and status_code >= 400 and status_code != 404:
+                # Genuine 4xx (content filter, auth, bad request) IS terminal.
                 # Surface the inner Flow error (e.g. content filter).
                 inner = _extract_inner_api_error(resp)
+                err_msg = inner or f"API_{status_code}"
+                logger.error(
+                    "workflow poll FAILED: wf=%s media=%s status=%s error=%s",
+                    name[:12], mid[:8], status_code, err_msg,
+                )
                 ops_summary.append(
                     {
                         "name": name,
                         "done": True,
                         "media_entries": [],
                         "status": None,
-                        "error": inner or f"API_{status_code}",
+                        "error": err_msg,
                     }
                 )
                 continue
@@ -777,6 +865,10 @@ class FlowSDK:
             fife = (
                 video_block.get("fifeUrl") if isinstance(video_block, dict) else None
             ) or data.get("fifeUrl")
+            logger.info(
+                "workflow poll DONE: wf=%s media=%s encoded_bytes=%d has_fife=%s",
+                name[:12], mid[:8], len(binary), isinstance(fife, str),
+            )
             ops_summary.append(
                 {
                     "name": name,
@@ -875,9 +967,11 @@ class FlowSDK:
             captcha_action=CAPTCHA_IMAGE,
         )
         if isinstance(resp, dict) and resp.get("error"):
+            logger.error("gen_image FAILED (transport): error=%s raw=%r", resp["error"], resp)
             return {"raw": resp, "error": resp["error"]}
         inner_err = _extract_inner_api_error(resp)
         if inner_err:
+            logger.error("gen_image FAILED (api): error=%s status=%s raw=%r", inner_err, resp.get("status"), resp)
             return {"raw": resp, "error": inner_err}
 
         entries = extract_media_entries(resp)
@@ -940,9 +1034,11 @@ class FlowSDK:
             captcha_action=CAPTCHA_IMAGE,
         )
         if isinstance(resp, dict) and resp.get("error"):
+            logger.error("gen_image FAILED (transport): error=%s raw=%r", resp["error"], resp)
             return {"raw": resp, "error": resp["error"]}
         inner_err = _extract_inner_api_error(resp)
         if inner_err:
+            logger.error("gen_image FAILED (api): error=%s status=%s raw=%r", inner_err, resp.get("status"), resp)
             return {"raw": resp, "error": inner_err}
 
         entries = extract_media_entries(resp)
@@ -981,6 +1077,7 @@ class FlowSDK:
             body=body,
         )
         if isinstance(resp, dict) and resp.get("error"):
+            logger.error("upload_image FAILED (transport): error=%s raw=%r", resp["error"], resp)
             return {"raw": resp, "error": resp["error"]}
 
         media_id = _extract_uploaded_media_id(resp)

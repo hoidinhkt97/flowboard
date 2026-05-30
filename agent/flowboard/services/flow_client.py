@@ -42,6 +42,66 @@ _FLOW_CREDITS_URL = "https://aisandbox-pa.googleapis.com/v1/credits"
 _TIER_REFRESH_MIN_INTERVAL_S = 60.0
 
 
+def _approx_body_size(body: Any) -> int:
+    """Best-effort byte size of an outbound request body, for logging only.
+
+    Lets a failure log show whether a 413 / timeout correlates with a large
+    payload (e.g. a multi-image i2v batch) without dumping the body itself.
+    """
+    if body is None:
+        return 0
+    try:
+        if isinstance(body, (str, bytes, bytearray)):
+            return len(body)
+        return len(json.dumps(body))
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+def _error_detail(result: Any) -> str:
+    """Detailed error summary from a completed api/trpc response.
+
+    The extension returns ``{"status", "data", "error"}``. Transport-level
+    failures set top-level ``error``; Flow API errors put a structured body
+    on ``data.error`` (``{message, status, details[].reason}``). Mirrors
+    ``flow_sdk._extract_inner_api_error`` but lives here so flow_client stays
+    import-free of the SDK. Never raises — always returns a str.
+    """
+    if not isinstance(result, dict):
+        return f"<non-dict response: {type(result).__name__}>"
+    top = result.get("error")
+    if top:
+        return str(top)
+    data = result.get("data")
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict):
+            reasons = [
+                d.get("reason")
+                for d in (err.get("details") or [])
+                if isinstance(d, dict) and isinstance(d.get("reason"), str)
+            ]
+            msg = err.get("message") or err.get("status") or "API error"
+            code = err.get("code")
+            prefix = f"[{code}] " if code else ""
+            return f"{prefix}{reasons[0]}: {msg}" if reasons else f"{prefix}{msg}"
+        # TRPC envelope: result.data.json.result.{status, error}
+        inner = data.get("json") if isinstance(data.get("json"), dict) else None
+        if isinstance(inner, dict):
+            result_inner = inner.get("result") if isinstance(inner.get("result"), dict) else {}
+            if isinstance(result_inner, dict):
+                err_inner = result_inner.get("error") or result_inner.get("message")
+                status_inner = result_inner.get("status")
+                if err_inner:
+                    return str(err_inner)
+                if isinstance(status_inner, int) and status_inner >= 400:
+                    return f"TRPC_{status_inner}"
+    if isinstance(data, str) and data:
+        return data
+    status = result.get("status")
+    return f"API_{status}"
+
+
 class FlowClient:
     """Singleton bridge client."""
 
@@ -267,8 +327,12 @@ class FlowClient:
         explicit_error = bool(data.get("error"))
         if http_error or explicit_error:
             self._failed_count += 1
+            # Include the full error text — don't truncate. The actual
+            # Google API error message (content-filter reason, quota
+            # exceeded, invalid model, etc) is vital for debugging and
+            # should appear verbatim in the agent log.
             msg = data.get("error") or f"API_{status}"
-            self._last_error = str(msg)[:200]
+            self._last_error = str(msg)
             fut.set_result(data)
         else:
             self._success_count += 1
@@ -304,13 +368,46 @@ class FlowClient:
         self._request_count += 1
 
         payload = {"id": req_id, "method": method, "params": params}
+        t0 = time.monotonic()
         try:
             await self._ws.send(json.dumps(payload))
-            return await asyncio.wait_for(fut, timeout=timeout or self.DEFAULT_TIMEOUT)
+            result = await asyncio.wait_for(fut, timeout=timeout or self.DEFAULT_TIMEOUT)
+            rt_ms = int((time.monotonic() - t0) * 1000)
+            status = result.get("status") if isinstance(result, dict) else None
+            has_error = bool(result.get("error")) if isinstance(result, dict) else False
+            # An HTTP 4xx/5xx is a failure even when the extension didn't set
+            # an explicit top-level `error` (the status + structured error
+            # body ride on the envelope). The old log reported `err=False`
+            # for a 500 — hiding it. Classify on status too.
+            http_error = isinstance(status, int) and status >= 400
+            if method in ("api_request", "trpc_request"):
+                url = params.get("url", "?")
+                path = url.split("/", 3)[-1] if "/" in url else url[:80]
+            else:
+                path = method
+            if has_error or http_error:
+                # Detailed failure log for EVERY Flow API round-trip: the
+                # HTTP verb, the extracted inner error, and the outbound
+                # payload size — enough to triage without grepping the raw
+                # envelope. WARNING so it stands out in the agent log.
+                logger.warning(
+                    "ws_%s ERR: %s %s status=%s detail=%s req_bytes=%d rt=%dms pending=%d",
+                    method[:6], params.get("method", "?"), path, status,
+                    _error_detail(result), _approx_body_size(params.get("body")),
+                    rt_ms, len(self._pending),
+                )
+            elif method in ("api_request", "trpc_request"):
+                logger.info(
+                    "ws_%s: %s status=%s err=False rt=%dms pending=%d",
+                    method[:6], path, status, rt_ms, len(self._pending),
+                )
+            return result
         except asyncio.TimeoutError:
+            rt_ms = int((time.monotonic() - t0) * 1000)
             self._pending.pop(req_id, None)
             self._failed_count += 1
             self._last_error = "timeout"
+            logger.warning("ws_%s: TIMEOUT rt=%dms", method, rt_ms)
             return {"error": "timeout"}
         except ConnectionError as exc:
             self._pending.pop(req_id, None)

@@ -893,6 +893,65 @@ async def test_check_async_mixed_schemas_routes_correctly():
 
 
 @pytest.mark.asyncio
+async def test_check_async_workflow_mode_500_keeps_polling():
+    """Flow's ``/v1/media/<id>`` endpoint returns a transient ``500 Internal
+    error encountered.`` while the render backend is busy — most visibly on
+    the very first poll, seconds after dispatch, long before veo3 finishes.
+    A 5xx is NOT a terminal verdict on the generation, so it must register as
+    ``done=False`` (keep polling), exactly like the 404-mid-render case."""
+    class WorkflowClient(RecordingClient):
+        async def api_request(self, **kwargs):
+            self.api_calls.append(kwargs)
+            return {
+                "status": 500,
+                "data": {"error": {"message": "Internal error encountered."}},
+            }
+
+    c = WorkflowClient()
+    sdk = FlowSDK(client=c)  # type: ignore[arg-type]
+    out = await sdk.check_async(
+        ["wf-uuid"],
+        workflows=[{"name": "wf-uuid", "primary_media_id": "primary-vid-1"}],
+    )
+    op = out["operations"][0]
+    assert op["done"] is False, "transient 5xx must keep polling, not fail"
+    assert op["error"] is None
+    assert op["media_entries"] == []
+
+
+@pytest.mark.asyncio
+async def test_check_async_workflow_mode_4xx_is_terminal():
+    """A genuine 4xx (e.g. content filter) IS a terminal verdict — it must
+    surface ``done=True`` with the inner error so the worker reports failure
+    instead of polling until the 5-minute deadline."""
+    class WorkflowClient(RecordingClient):
+        async def api_request(self, **kwargs):
+            self.api_calls.append(kwargs)
+            return {
+                "status": 400,
+                "data": {
+                    "error": {
+                        "status": "INVALID_ARGUMENT",
+                        "message": "Request contains an invalid argument.",
+                        "details": [
+                            {"reason": "PUBLIC_ERROR_UNSAFE_GENERATION"}
+                        ],
+                    }
+                },
+            }
+
+    c = WorkflowClient()
+    sdk = FlowSDK(client=c)  # type: ignore[arg-type]
+    out = await sdk.check_async(
+        ["wf-uuid"],
+        workflows=[{"name": "wf-uuid", "primary_media_id": "primary-vid-1"}],
+    )
+    op = out["operations"][0]
+    assert op["done"] is True
+    assert "PUBLIC_ERROR_UNSAFE_GENERATION" in (op["error"] or "")
+
+
+@pytest.mark.asyncio
 async def test_gen_image_propagates_prominent_people_filter():
     """Without the inner-error check, gen_image returned ``media_ids: []``
     on a content-filter rejection — worker then marked it `done` instead of

@@ -50,7 +50,7 @@ async def _handle_proxy(params: dict) -> tuple[dict, Optional[str]]:
     if not isinstance(resp, dict):
         return {"value": resp}, None
     if resp.get("error"):
-        return resp, str(resp["error"])[:200]
+        return resp, str(resp["error"])
     status = resp.get("status")
     if isinstance(status, int) and status >= 400:
         return resp, f"API_{status}"
@@ -64,7 +64,7 @@ async def _handle_create_project(params: dict) -> tuple[dict, Optional[str]]:
     tool = params.get("tool", "PINHOLE")
     resp = await get_flow_sdk().create_project(name.strip(), tool)
     if resp.get("error"):
-        return resp, str(resp["error"])[:200]
+        return resp, str(resp["error"])
     return resp, None
 
 
@@ -128,7 +128,7 @@ async def _handle_gen_image(params: dict) -> tuple[dict, Optional[str]]:
         image_model=image_model,
     )
     if resp.get("error"):
-        return resp, str(resp["error"])[:200]
+        return resp, str(resp["error"])
     # Flow returns signed fifeUrls directly in the response — persist them
     # immediately so `/media/:id` can serve bytes without any extra round-trip.
     entries_with_urls = [
@@ -217,7 +217,7 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
         video_quality=video_quality,
     )
     if dispatch.get("error"):
-        return dispatch, str(dispatch["error"])[:200]
+        return dispatch, str(dispatch["error"])
 
     op_names = dispatch.get("operation_names") or []
     if not op_names:
@@ -233,6 +233,11 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
     entry_by_name: dict[str, dict] = {}
     op_errors: dict[str, str] = {}
     rid = params.get("__request_id")
+    t0 = time.monotonic()
+    logger.info(
+        "video_start: rid=%s ops=%d has_workflows=%s",
+        rid, len(op_names), bool(workflows),
+    )
 
     # Per-op resolution: each operation in the batch resolves
     # independently (success, content-filter rejection, or timeout). We
@@ -265,6 +270,10 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
             )
         last_poll = await sdk.check_async(op_names, workflows=workflows)
         if last_poll.get("error"):
+            logger.warning(
+                "video_poll_error: rid=%s attempt=%d/%d err=%s",
+                rid, poll_attempts, VIDEO_POLL_MAX_CYCLES, last_poll["error"],
+            )
             continue
         for op in last_poll.get("operations") or []:
             if not isinstance(op, dict):
@@ -288,6 +297,14 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
                     if isinstance(e, dict) and e.get("media_id"):
                         entry_by_name[name] = e
                         break
+        done_count = sum(done_by_name.values())
+        elapsed_s = int(time.monotonic() - t0)
+        if done_count < len(op_names):
+            logger.info(
+                "video_poll: rid=%s attempt=%d/%d done=%d/%d pending=%d elapsed=%ds",
+                rid, poll_attempts, VIDEO_POLL_MAX_CYCLES,
+                done_count, len(op_names), len(op_names) - done_count, elapsed_s,
+            )
 
     # Slots still unresolved after the max cycles — record as timeout
     # so the partial summary names them alongside any filter failures.
@@ -318,12 +335,17 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
 
     success_count = sum(1 for x in positional_ids if x)
     total = len(op_names)
+    elapsed_s = int(time.monotonic() - t0)
 
     if success_count == 0:
         # No op produced a clip — surface the first error verbatim.
         # When all errors are "timeout_waiting_video" this matches the
         # legacy single-op timeout contract; tests rely on it.
         first_err = next(iter(op_errors.values()), "timeout_waiting_video")
+        logger.error(
+            "video_end: rid=%s FAILED success=0/%d errors=%s elapsed=%ds",
+            rid, total, op_errors, elapsed_s,
+        )
         return (
             {
                 "raw_dispatch": dispatch,
@@ -372,6 +394,15 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
         partial_error = (
             f"{len(op_errors)}/{total} variants blocked: {', '.join(unique_errs)}"
         )
+
+    logger.info(
+        "video_end: rid=%s %s=%d/%d errors=%s elapsed=%ds",
+        rid,
+        "PARTIAL" if op_errors else "DONE",
+        success_count, total,
+        op_errors if op_errors else "none",
+        elapsed_s,
+    )
 
     return (
         {
@@ -428,7 +459,7 @@ async def _handle_edit_image(params: dict) -> tuple[dict, Optional[str]]:
         image_model=image_model,
     )
     if resp.get("error"):
-        return resp, str(resp["error"])[:200]
+        return resp, str(resp["error"])
     entries_with_urls = [
         e for e in (resp.get("media_entries") or []) if isinstance(e, dict) and e.get("url")
     ]
@@ -524,7 +555,7 @@ async def _handle_gen_video_omni(params: dict) -> tuple[dict, Optional[str]]:
         paygate_tier=tier,
     )
     if dispatch.get("error"):
-        return dispatch, str(dispatch["error"])[:200]
+        return dispatch, str(dispatch["error"])
 
     op_names = dispatch.get("operation_names") or []
     if not op_names:
@@ -537,6 +568,11 @@ async def _handle_gen_video_omni(params: dict) -> tuple[dict, Optional[str]]:
     entry_by_name: dict[str, dict] = {}
     op_errors: dict[str, str] = {}
     rid = params.get("__request_id")
+    t0_omni = time.monotonic()
+    logger.info(
+        "omni_start: rid=%s ops=%d duration=%ds has_workflows=%s",
+        rid, len(op_names), duration_s, bool(workflows),
+    )
 
     while (
         poll_attempts < VIDEO_POLL_MAX_CYCLES
@@ -593,8 +629,16 @@ async def _handle_gen_video_omni(params: dict) -> tuple[dict, Optional[str]]:
             positional_ids.append(None)
             slot_errors.append(op_errors.get(name))
 
+    elapsed_omni = int(time.monotonic() - t0_omni)
+    success_omni = sum(1 for x in positional_ids if x)
+    total_omni = len(op_names)
+
     if not any(positional_ids):
         first_err = next(iter(op_errors.values()), "timeout_waiting_video")
+        logger.error(
+            "omni_end: rid=%s FAILED success=0/%d errors=%s elapsed=%ds",
+            rid, total_omni, op_errors, elapsed_omni,
+        )
         return (
             {
                 "raw_dispatch": dispatch,
@@ -605,6 +649,11 @@ async def _handle_gen_video_omni(params: dict) -> tuple[dict, Optional[str]]:
             },
             first_err,
         )
+
+    logger.info(
+        "omni_end: rid=%s DONE success=%d/%d elapsed=%ds",
+        rid, success_omni, total_omni, elapsed_omni,
+    )
 
     entries_with_urls = [
         e for e in succeeded_entries if isinstance(e, dict) and e.get("url")

@@ -385,12 +385,44 @@ async function handleApiRequest(msg) {
 
     sendToAgent({ id, status: response.status, data: responseData });
 
+    // Build a detailed error message from the response body so the
+    // agent log shows exactly what Google rejected (content-filter code,
+    // quota exceeded, invalid model, etc) instead of just "API_400".
+    let errorDetail = null;
+    if (!response.ok && responseData && typeof responseData === 'object') {
+      // Google API errors can live at multiple nesting levels depending
+      // on the endpoint. Walk the common shapes.
+      const err = responseData.error || responseData.details;
+      if (err) {
+        const msg = err.message || err.status || err.details || '';
+        const reasons = (err.details || []).map?.(d => d.reason || d.message).filter(Boolean);
+        errorDetail = [msg, ...reasons].filter(Boolean).join(' — ');
+      }
+      // Also check the TRPC-style envelope: {result:{data:{json:{result:{status,error}}}}}
+      if (!errorDetail) {
+        const inner = responseData.result?.data?.json?.result;
+        if (inner && (inner.status >= 400 || inner.error)) {
+          errorDetail = inner.error || inner.message || `status_${inner.status}`;
+        }
+      }
+    }
+
     if (response.ok) {
       if (hasCaptcha) { metrics.successCount++; metrics.lastError = null; }
       updateRequestLog(id, { status: 'success', httpStatus: response.status });
     } else {
-      if (hasCaptcha) { metrics.failedCount++; metrics.lastError = `API_${response.status}`; }
-      updateRequestLog(id, { status: 'failed', httpStatus: response.status, error: `API_${response.status}` });
+      if (hasCaptcha) {
+        metrics.failedCount++;
+        metrics.lastError = errorDetail || `API_${response.status}`;
+      }
+      // Always include the actual API error message — not just the HTTP
+      // status — so the extension's request log and the agent's logs
+      // show the real rejection reason (content-filter code, quota, etc).
+      updateRequestLog(id, {
+        status: 'failed',
+        httpStatus: response.status,
+        error: errorDetail || `API_${response.status}`,
+      });
     }
   } catch (e) {
     sendToAgent({ id, status: 500, error: e.message || 'API_REQUEST_FAILED' });
