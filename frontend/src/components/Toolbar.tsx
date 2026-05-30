@@ -3,6 +3,7 @@ import { useBoardStore } from "../store/board";
 import { ActivityBell } from "./activity/ActivityBell";
 import { AiProviderBadge } from "./AiProviderBadge";
 import { SponsorButton } from "./SponsorDialog";
+import { DownloadAllButton } from "../canvas/DownloadAllButton";
 
 export function Toolbar() {
   const boardName = useBoardStore((s) => s.boardName);
@@ -59,6 +60,7 @@ export function Toolbar() {
       )}
 
       <div className="toolbar-actions">
+        <DownloadAllButton />
         <ActivityBell />
         <AiProviderBadge />
         <SponsorButton />
