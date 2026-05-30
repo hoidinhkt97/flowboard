@@ -1,0 +1,105 @@
+name: Build macOS Desktop
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Create a draft GitHub Release with the artifacts'
+        type: boolean
+        default: false
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    timeout-minutes: 45
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            desktop/package-lock.json
+            frontend/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      # ---------- Frontend ----------
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci || npm install
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      # ---------- Agent (PyInstaller) ----------
+      - name: Install agent deps
+        working-directory: agent
+        run: |
+          uv venv
+          uv pip install --python .venv/bin/python -e .
+          uv pip install --python .venv/bin/python pyinstaller
+
+      - name: Build agent binary (PyInstaller)
+        working-directory: agent
+        run: |
+          source .venv/bin/activate
+          pyinstaller flowboard-agent.spec --clean --noconfirm
+
+      # ---------- Desktop (Electron) ----------
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm ci || npm install
+
+      - name: Build desktop TypeScript
+        working-directory: desktop
+        run: npm run build
+
+      - name: Package desktop app (.dmg x64 + arm64)
+        working-directory: desktop
+        env:
+          # Unsigned build. To enable signing later, set CSC_LINK +
+          # CSC_KEY_PASSWORD secrets and drop `identity: null` in
+          # desktop/electron-builder.yml.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run dist:mac
+
+      - name: List build output
+        working-directory: desktop/release
+        run: ls -lah
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: flowboard-macos-${{ github.sha }}
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.blockmap
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            desktop/release/*.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
