@@ -23,6 +23,7 @@ def init_db() -> None:
     from sqlalchemy import inspect
 
     from flowboard.db import models
+    from flowboard.db import video_pipeline_models  # noqa: F401  (registers VideoPipeline* tables)
 
     # Targeted migration: if an older `asset` table exists without `url`,
     # drop it. Acceptable because the app has not stored real asset rows
