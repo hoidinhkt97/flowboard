@@ -177,7 +177,7 @@ export function PipelineNewPage() {
         <div className="vp-wizard__section-title">Sản phẩm</div>
         <div className="vp-wizard__products">
           {s.products.map((p, i) => (
-            <div className="vp-wizard__product" key={i}>
+            <div className="vp-wizard__product" key={p.uid}>
               <InputCard
                 label={`Sản phẩm ${i + 1}`}
                 kind="product"

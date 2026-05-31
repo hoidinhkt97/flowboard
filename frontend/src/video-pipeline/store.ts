@@ -2,12 +2,16 @@ import { create } from "zustand";
 
 export type InputSource = "upload" | "gen" | "ai_gen";
 export interface ResolvedInput { source: InputSource; media_id: string | null; prompt?: string; }
+export interface ProductInput extends ResolvedInput { uid: string; }
+
+let _pid = 0;
+const nextUid = () => `p${_pid++}`;
 
 export interface WizardState {
   typeKey: string;
   character: ResolvedInput;
   background: ResolvedInput;
-  products: ResolvedInput[];
+  products: ProductInput[];
   scriptBrief: string;
   aspectRatio: "9:16" | "1:1" | "16:9";
   sceneCount: number;
@@ -22,6 +26,7 @@ export interface WizardState {
   addProduct: () => void;
   removeProduct: (index: number) => void;
   setProduct: (index: number, v: ResolvedInput) => void;
+  // setProduct receives a plain ResolvedInput from InputCard; the existing uid is preserved internally.
   loadTemplateParams: (params: Record<string, unknown>) => void;
   reset: () => void;
   isValid: () => boolean;
@@ -32,7 +37,7 @@ const INITIAL = {
   typeKey: "product_review",
   character: { ...EMPTY_INPUT },
   background: { ...EMPTY_INPUT },
-  products: [{ ...EMPTY_INPUT }],
+  products: [{ ...EMPTY_INPUT, uid: nextUid() }],
   scriptBrief: "",
   aspectRatio: "9:16" as const,
   sceneCount: 3,
@@ -48,9 +53,12 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   setField: (key, value) => set({ [key]: value } as Partial<WizardState>),
   setCharacter: (v) => set({ character: v }),
   setBackground: (v) => set({ background: v }),
-  addProduct: () => set((s) => ({ products: [...s.products, { ...EMPTY_INPUT }] })),
+  addProduct: () => set((s) => ({ products: [...s.products, { ...EMPTY_INPUT, uid: nextUid() }] })),
   removeProduct: (index) => set((s) => ({ products: s.products.filter((_, i) => i !== index) })),
-  setProduct: (index, v) => set((s) => ({ products: s.products.map((p, i) => (i === index ? v : p)) })),
+  setProduct: (index, v) =>
+    set((s) => ({
+      products: s.products.map((p, i) => (i === index ? { ...v, uid: s.products[index].uid } : p)),
+    })),
   loadTemplateParams: (params) =>
     set({
       aspectRatio: (params.aspect_ratio as WizardState["aspectRatio"]) ?? get().aspectRatio,
@@ -62,7 +70,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       concurrencyCap: (params.concurrency_cap as number) ?? get().concurrencyCap,
       scriptBrief: (params.script_brief as string) ?? get().scriptBrief,
     }),
-  reset: () => set({ ...INITIAL, products: [{ ...EMPTY_INPUT }] }),
+  reset: () => set({ ...INITIAL, products: [{ ...EMPTY_INPUT, uid: nextUid() }] }),
   isValid: () => {
     const s = get();
     const ok = (i: ResolvedInput) => !!i.media_id;
