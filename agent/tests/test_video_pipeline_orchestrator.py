@@ -34,6 +34,15 @@ class FakeDeps:
             raise ClipGenError("blocked")
         return f"clip-{product_index}-{video_index}-{scene_index}"
 
+    async def fetch_clip_to(self, media_id, dest):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"FAKE"); return dest
+
+    async def merge(self, *, clips, out_path, crossfade_sec, audio, durations=None):
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"FAKE")
+        return {"file_size_bytes": 4, "path": str(out_path)}
+
 
 def _make_run(products=1, videos=1, scenes=2):
     return run_builder.create_run(type_key="product_review", inputs={
@@ -63,10 +72,9 @@ async def test_happy_path_all_scenes_clip_done(monkeypatch, tmp_path):
     assert len(scenes) == 2 * 2 * 3
     assert all(sc.status == "clip_done" for sc in scenes)
     assert all(sc.clip_media_id for sc in scenes)
-    assert all(v.status == "scenes_done" for v in videos)
+    assert all(v.status == "done" for v in videos)
     assert all(v.composite_media_id for v in videos)
-    # generating until merge lands in Phase 5
-    assert run_row.status in ("generating", "merging")
+    assert run_row.status == "done"
 
 
 @pytest.mark.asyncio

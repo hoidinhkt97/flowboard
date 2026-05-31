@@ -57,6 +57,16 @@ class DefaultDeps:
         from flowboard.services.video_pipeline.clip_gen import generate_clip
         return await generate_clip(**k)
 
+    async def fetch_clip_to(self, media_id, dest):
+        from flowboard.services.video_pipeline.clip_fetch import fetch_clip_to
+        return await fetch_clip_to(media_id, dest)
+
+    async def merge(self, *, clips, out_path, crossfade_sec, audio, durations=None):
+        from flowboard.services.video_pipeline.merger import merge_clips
+        return await merge_clips(clips=clips, out_path=out_path,
+                                 crossfade_sec=crossfade_sec, audio=audio,
+                                 durations=durations)
+
 
 def _is_cancelled(short_id: str) -> bool:
     with get_session() as s:
@@ -94,6 +104,8 @@ async def run(short_id: str, *, deps: Optional[Any] = None) -> None:
     aspect = inputs.get("aspect_ratio", "9:16")
     quality = inputs.get("quality", "standard")
     cap = int(inputs.get("concurrency_cap", 4))
+    crossfade_sec = float(inputs.get("crossfade_sec", 0.0))
+    audio = bool(inputs.get("audio_enabled", True))
     sem = asyncio.Semaphore(cap)
     character_mid = inputs["character"]["media_id"]
     background_mid = inputs["background"]["media_id"]
@@ -112,16 +124,23 @@ async def run(short_id: str, *, deps: Optional[Any] = None) -> None:
             return
         await _run_product(short_id, run_obj_id, deps, project_id, product_index,
                            product_mid, character_mid, background_mid, script_brief,
-                           aspect, quality, sem)
+                           aspect, quality, sem, crossfade_sec, audio)
 
     if _is_cancelled(short_id):
         tr.set_run_status(short_id, "cancelled", force=True)
         return
-    # Phase 5 will transition to "merging" then "done"; for now leave generating.
+
+    # Finalize: if all videos are terminal, mark run done
+    with get_session() as s:
+        videos = s.exec(select(VideoPipelineVideo).where(
+            VideoPipelineVideo.run_id == run_obj_id)).all()
+    if videos and all(v.status in ("done", "failed") for v in videos):
+        tr.set_run_status(short_id, "done", force=True)
 
 
 async def _run_product(short_id, run_id, deps, project_id, product_index, product_mid,
-                       character_mid, background_mid, script_brief, aspect, quality, sem):
+                       character_mid, background_mid, script_brief, aspect, quality, sem,
+                       crossfade_sec, audio):
     with get_session() as s:
         videos = sorted(
             s.exec(select(VideoPipelineVideo).where(
@@ -152,14 +171,16 @@ async def _run_product(short_id, run_id, deps, project_id, product_index, produc
             if _is_cancelled(short_id):
                 return
             await _run_video(short_id, run_id, deps, project_id, product_index, vidx,
-                             vid_id, background_mid, script_brief, aspect, quality)
+                             vid_id, background_mid, script_brief, aspect, quality,
+                             crossfade_sec, audio)
 
     await asyncio.gather(*[run_one_video(vid_id, vidx)
                            for vid_id, vidx, _c, _s in video_rows])
 
 
 async def _run_video(short_id, run_id, deps, project_id, product_index, video_index,
-                     video_id, background_mid, script_brief, aspect, quality):
+                     video_id, background_mid, script_brief, aspect, quality,
+                     crossfade_sec, audio):
     with get_session() as s:
         v = s.get(VideoPipelineVideo, video_id)
         composite_mid = v.composite_media_id
@@ -239,3 +260,44 @@ async def _run_video(short_id, run_id, deps, project_id, product_index, video_in
         cur = v.status
     if all(sc.status in ("clip_done", "merged", "failed") for sc in scenes) and cur == "scripted":
         tr.set_video_status(short_id, video_id, "scenes_done")
+        await _merge_video(short_id, run_id, deps, video_id, product_index, video_index,
+                           crossfade_sec, audio)
+
+
+async def _merge_video(short_id, run_id, deps, video_id, product_index, video_index,
+                       crossfade_sec, audio):
+    with get_session() as s:
+        v = s.get(VideoPipelineVideo, video_id)
+        if v.status == "done":
+            return
+        scenes = sorted(
+            s.exec(select(VideoPipelineScene).where(
+                VideoPipelineScene.run_id == run_id,
+                VideoPipelineScene.product_index == product_index,
+                VideoPipelineScene.video_index == video_index)).all(),
+            key=lambda sc: sc.scene_index)
+        clip_ids = [sc.clip_media_id for sc in scenes
+                    if sc.status == "clip_done" and sc.clip_media_id]
+        run_obj = s.get(VideoPipelineRun, run_id)
+        short = run_obj.short_id
+
+    if not clip_ids:
+        tr.set_video_status(short_id, video_id, "failed", error="no clips to merge")
+        return
+
+    tr.set_video_status(short_id, video_id, "merging")
+    local_clips = []
+    for j, mid in enumerate(clip_ids):
+        dest = storage.clip_path(short, product_index, video_index, j)
+        local_clips.append(await deps.fetch_clip_to(mid, dest))
+    out_path = storage.merged_path(short, product_index, video_index)
+    res = await deps.merge(clips=local_clips, out_path=out_path,
+                           crossfade_sec=crossfade_sec, audio=audio)
+    with get_session() as s:
+        v = s.get(VideoPipelineVideo, video_id)
+        v.merged_local_path = res["path"]
+        v.merged_url = f"/api/video-pipeline/runs/{short}/videos/{video_id}/preview"
+        v.file_size_bytes = res["file_size_bytes"]
+        s.add(v)
+        s.commit()
+    tr.set_video_status(short_id, video_id, "done")
