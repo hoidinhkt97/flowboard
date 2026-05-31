@@ -930,3 +930,152 @@ export function getFlowSyncStatus(): Promise<SyncStatusResponse> {
 export function syncBoardsUpToFlow(): Promise<SyncUpResponse> {
   return api<SyncUpResponse>("/api/flow/projects/sync-up", { method: "POST" });
 }
+
+// ── Video Pipeline ─────────────────────────────────────────────────────────
+// Wraps the Phase-1/2 batch product-review video automation routes. JSON wire
+// format is snake_case (mirrors the FastAPI schemas / SQLModel columns); the
+// wizard store maps camelCase → snake_case at dispatch time.
+
+export interface VPTypeDTO {
+  key: string;
+  label: string;
+  input_schema: Record<string, unknown>;
+}
+
+export interface VPTemplateDTO {
+  id: number;
+  name: string;
+  type_key: string;
+  params: Record<string, unknown>;
+  is_builtin: boolean;
+  position: number;
+}
+
+export interface VPSceneDTO {
+  id: number;
+  scene_index: number;
+  image_prompt: string;
+  video_prompt: string;
+  storyboard_media_id: string | null;
+  clip_media_id: string | null;
+  status: string;
+  error: string | null;
+}
+
+export interface VPVideoDTO {
+  id: number;
+  video_index: number;
+  composite_media_id: string | null;
+  merged_url: string | null;
+  status: string;
+  error: string | null;
+  duration_sec: number | null;
+  file_size_bytes: number | null;
+  scenes: VPSceneDTO[];
+}
+
+export interface VPProductDTO {
+  id: number;
+  product_index: number;
+  media_id: string | null;
+  source: string;
+  videos: VPVideoDTO[];
+}
+
+export interface VPRunDTO {
+  short_id: string;
+  type_key: string;
+  flow_project_id: string | null;
+  inputs: Record<string, unknown>;
+  status: string;
+  error: string | null;
+  cancelled: boolean;
+  products: VPProductDTO[];
+  progress: { clips_total: number; clips_done: number };
+}
+
+export function vpListTypes() {
+  return api<VPTypeDTO[]>("/api/video-pipeline/types");
+}
+
+export function vpListTemplates() {
+  return api<VPTemplateDTO[]>("/api/video-pipeline/templates");
+}
+
+export function vpCreateTemplate(body: {
+  name: string;
+  type_key?: string;
+  params: Record<string, unknown>;
+}) {
+  return api<VPTemplateDTO>("/api/video-pipeline/templates", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function vpPatchTemplate(
+  id: number,
+  body: Partial<{ name: string; params: Record<string, unknown>; position: number }>,
+) {
+  return api<VPTemplateDTO>(`/api/video-pipeline/templates/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function vpDeleteTemplate(id: number): Promise<void> {
+  // Backend returns 204 No Content; api<T>() would choke on the empty body,
+  // so we use fetch() directly and skip the JSON parse (mirrors
+  // deleteReference above).
+  const res = await fetch(`/api/video-pipeline/templates/${id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    throw new Error(`vpDeleteTemplate: ${res.status} ${res.statusText}`);
+  }
+}
+
+export function vpResolveInput(body: {
+  kind: string;
+  source: string;
+  media_id?: string;
+  description?: string;
+  project_id?: string;
+  aspect_ratio?: string;
+  variant_count?: number;
+}) {
+  return api<{
+    media_id?: string;
+    media_ids?: string[];
+    media_entries?: Array<{ media_id: string; url: string }>;
+    prompt?: string;
+  }>("/api/video-pipeline/inputs/resolve", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function vpCreateRun(body: {
+  type_key: string;
+  inputs: Record<string, unknown>;
+}) {
+  return api<VPRunDTO>("/api/video-pipeline/runs", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function vpStartRun(shortId: string): Promise<void> {
+  // 202 Accepted with an empty body — api<T>() would call res.json() and
+  // throw, so we use raw fetch() and skip the parse.
+  const res = await fetch(`/api/video-pipeline/runs/${shortId}/start`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error(`${res.status} ${res.statusText}`);
+  }
+}
+
+export function vpGetRun(shortId: string) {
+  return api<VPRunDTO>(`/api/video-pipeline/runs/${shortId}`);
+}
