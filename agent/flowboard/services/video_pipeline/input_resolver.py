@@ -20,6 +20,7 @@ from typing import Any, Callable, Optional
 from flowboard.services.flow_client import flow_client
 from flowboard.services.flow_sdk import get_flow_sdk
 from flowboard.services.llm import run_llm
+from flowboard.services import media as media_service
 
 _ASPECT = {
     "9:16": "IMAGE_ASPECT_RATIO_PORTRAIT",
@@ -72,8 +73,15 @@ async def resolve_ai_gen(
     )
     if resp.get("error"):
         raise InputResolveError(str(resp["error"]))
+    entries = resp.get("media_entries") or []
+    with_urls = [e for e in entries if e.get("url")]
+    if with_urls:
+        try:
+            media_service.ingest_urls(with_urls)
+        except Exception:  # noqa: BLE001 — caching is best-effort
+            pass
     return {
         "prompt": full_prompt,
         "media_ids": resp.get("media_ids") or [],
-        "media_entries": resp.get("media_entries") or [],
+        "media_entries": entries,
     }
