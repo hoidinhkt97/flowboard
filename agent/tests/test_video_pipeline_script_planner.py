@@ -65,3 +65,17 @@ async def test_plan_rejects_wrong_scene_count():
     with pytest.raises(sp.ScriptPlanError):
         await sp.plan_script(script_brief="x", scene_count=3,
                              llm_runner=short_llm, max_retries=1)
+
+
+@pytest.mark.asyncio
+async def test_plan_calls_llm_with_planner_feature():
+    # Guards the load-bearing correction: run_llm's first arg is a FEATURE
+    # ("planner"), not a provider ("claude" would raise LLMError in prod).
+    seen = {}
+
+    async def fake_llm(feature, user_prompt, *, system_prompt=None, attachments=None, timeout=90.0):
+        seen["feature"] = feature
+        return _valid_scenes(2)
+
+    await sp.plan_script(script_brief="x", scene_count=2, llm_runner=fake_llm)
+    assert seen["feature"] == "planner"
