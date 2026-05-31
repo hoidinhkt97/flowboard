@@ -9,9 +9,18 @@ from flowboard.services.flow_client import flow_client
 from flowboard.services import media as media_service
 
 VIDEO_ASPECT = {
-    "16:9": "landscape",
-    "9:16": "portrait",
-    "1:1": "square",
+    "16:9": "VIDEO_ASPECT_RATIO_LANDSCAPE",
+    "9:16": "VIDEO_ASPECT_RATIO_PORTRAIT",
+    "1:1": "VIDEO_ASPECT_RATIO_SQUARE",
+}
+
+# Map wizard quality labels to SDK-accepted values.
+_QUALITY_MAP = {
+    "fast": "fast",
+    "standard": "fast",   # wizard "Chuẩn" → SDK fast
+    "high": "quality",    # wizard "Cao"   → SDK quality
+    "lite": "lite",
+    "quality": "quality",
 }
 
 _POLL_INTERVAL_S = 10.0
@@ -23,7 +32,11 @@ class ClipGenError(Exception):
 
 
 def _to_video_aspect(aspect_ratio: str) -> str:
-    return VIDEO_ASPECT.get(aspect_ratio, "landscape")
+    return VIDEO_ASPECT.get(aspect_ratio, "VIDEO_ASPECT_RATIO_LANDSCAPE")
+
+
+def _to_sdk_quality(quality: str) -> str:
+    return _QUALITY_MAP.get(quality, "fast")
 
 
 async def generate_clip(
@@ -53,7 +66,7 @@ async def generate_clip(
         project_id=project_id,
         start_media_id=start_media_id,
         aspect_ratio=_to_video_aspect(aspect_ratio),
-        video_quality=quality,
+        video_quality=_to_sdk_quality(quality),
         paygate_tier=tier,
     )
     if dispatch.get("error"):
