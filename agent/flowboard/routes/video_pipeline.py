@@ -20,7 +20,10 @@ from flowboard.services.video_pipeline import run_builder, serializers
 from flowboard.services.video_pipeline import input_resolver as ir
 from flowboard.services.video_pipeline import orchestrator as _vp_orchestrator
 from flowboard.db.session import get_session
-from flowboard.db.video_pipeline_models import VideoPipelineRun, VideoPipelineVideo
+from flowboard.db.video_pipeline_models import (
+    VideoPipelineRun, VideoPipelineVideo, VideoPipelineScene,
+)
+from flowboard.services.video_pipeline import regen as _regen
 
 logger = logging.getLogger(__name__)
 _active_vp_tasks: dict[str, asyncio.Task] = {}
@@ -215,3 +218,114 @@ def download_all(short_id: str):
     buf.seek(0)
     headers = {"Content-Disposition": f'attachment; filename="{short_id}.zip"'}
     return StreamingResponse(buf, media_type="application/zip", headers=headers)
+
+
+# ---- Cancel ----
+
+@router.post("/runs/{short_id}/cancel")
+def cancel_run(short_id: str):
+    with get_session() as s:
+        run = s.exec(select(VideoPipelineRun).where(
+            VideoPipelineRun.short_id == short_id)).first()
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        run.cancelled = True
+        s.add(run)
+        s.commit()
+    return {"cancelled": True}
+
+
+# ---- Scene prompt edit ----
+
+class ScenePatch(BaseModel):
+    image_prompt: Optional[str] = None
+    video_prompt: Optional[str] = None
+
+
+@router.patch("/runs/{short_id}/scenes/{scene_id}")
+def patch_scene(short_id: str, scene_id: int, body: ScenePatch):
+    with get_session() as s:
+        run = s.exec(select(VideoPipelineRun).where(
+            VideoPipelineRun.short_id == short_id)).first()
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        sc = s.get(VideoPipelineScene, scene_id)
+        if sc is None or sc.run_id != run.id:
+            raise HTTPException(status_code=404, detail="scene not found")
+        if sc.status in ("storyboard_running", "clip_running"):
+            raise HTTPException(status_code=409, detail="scene is running")
+        if body.image_prompt is not None:
+            sc.image_prompt = body.image_prompt
+        if body.video_prompt is not None:
+            sc.video_prompt = body.video_prompt
+        s.add(sc)
+        s.commit()
+        s.refresh(sc)
+        return {
+            "id": sc.id, "scene_index": sc.scene_index,
+            "image_prompt": sc.image_prompt, "video_prompt": sc.video_prompt,
+            "status": sc.status,
+        }
+
+
+# ---- Regen routes ----
+
+async def _relaunch(short_id: str) -> None:
+    """Re-launch the orchestrator as a background task (idempotent — skips done work)."""
+    task = asyncio.create_task(_orchestrator_run(short_id), name=f"vp-regen-{short_id}")
+    _active_vp_tasks[short_id] = task
+
+    def _cleanup(t):
+        _active_vp_tasks.pop(short_id, None)
+
+    task.add_done_callback(_cleanup)
+
+
+@router.post("/runs/{short_id}/scenes/{scene_id}/regen-clip", status_code=202)
+async def regen_clip(short_id: str, scene_id: int):
+    try:
+        _regen.reset_for_clip(short_id, scene_id)
+    except _regen.RegenConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    await _relaunch(short_id)
+    return Response(status_code=202)
+
+
+@router.post("/runs/{short_id}/scenes/{scene_id}/regen-storyboard", status_code=202)
+async def regen_storyboard(short_id: str, scene_id: int):
+    try:
+        _regen.reset_for_storyboard(short_id, scene_id)
+    except _regen.RegenConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    await _relaunch(short_id)
+    return Response(status_code=202)
+
+
+@router.post("/runs/{short_id}/videos/{video_id}/regen-composite", status_code=202)
+async def regen_composite(short_id: str, video_id: int):
+    try:
+        _regen.reset_for_composite(short_id, video_id)
+    except _regen.RegenConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    await _relaunch(short_id)
+    return Response(status_code=202)
+
+
+@router.post("/runs/{short_id}/videos/{video_id}/regen-video", status_code=202)
+async def regen_video(short_id: str, video_id: int):
+    try:
+        _regen.reset_for_video(short_id, video_id)
+    except _regen.RegenConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    await _relaunch(short_id)
+    return Response(status_code=202)
+
+
+@router.post("/runs/{short_id}/videos/{video_id}/remerge", status_code=202)
+async def remerge_video(short_id: str, video_id: int):
+    try:
+        _regen.reset_for_remerge(short_id, video_id)
+    except _regen.RegenConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    await _relaunch(short_id)
+    return Response(status_code=202)
