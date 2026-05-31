@@ -12,6 +12,7 @@ from flowboard.db.models import Request
 from flowboard.routes import activity, auth, boards, chat, edges, flow_projects, llm, media, nodes, plans, projects, prompt, upload, vision
 from flowboard.routes import references as references_route
 from flowboard.routes import requests as requests_route
+from flowboard.routes import video_pipeline as video_pipeline_route
 from flowboard.services.flow_client import flow_client
 from flowboard.services.ws_server import run_ws_server
 from flowboard.worker.processor import get_worker
@@ -55,6 +56,8 @@ def _recover_orphan_running_requests() -> int:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    from flowboard.services.video_pipeline import templates as _vp_templates
+    _vp_templates.seed_builtins()
     recovered = _recover_orphan_running_requests()
     if recovered:
         logger.info("recovered %d orphan running request(s) → failed", recovered)
@@ -103,6 +106,7 @@ app.include_router(prompt.router)
 app.include_router(auth.router)
 app.include_router(llm.router)
 app.include_router(activity.router)
+app.include_router(video_pipeline_route.router)
 
 
 # Mount frontend static files if frontend/dist exists (desktop app deployment)
