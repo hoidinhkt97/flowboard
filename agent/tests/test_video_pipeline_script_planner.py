@@ -4,9 +4,13 @@ import pytest
 from flowboard.services.video_pipeline import script_planner as sp
 
 
+def _long_prompt(prefix: str, idx: int) -> str:
+    return " ".join([f"{prefix}-scene-{idx}"] * 500)
+
+
 def _valid_scenes(n):
     return json.dumps({"scenes": [
-        {"image_prompt": f"compose scene {i}", "video_prompt": f"motion {i}"}
+        {"image_prompt": _long_prompt("image", i), "video_prompt": _long_prompt("video", i)}
         for i in range(n)
     ]})
 
