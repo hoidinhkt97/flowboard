@@ -2,6 +2,8 @@
 Later phases extend this same router (inputs/resolve, runs, regen, ...)."""
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Response
@@ -12,8 +14,15 @@ from flowboard.services.video_pipeline.types import registry
 from flowboard.services.video_pipeline import templates as tpl
 from flowboard.services.video_pipeline import run_builder, serializers
 from flowboard.services.video_pipeline import input_resolver as ir
+from flowboard.services.video_pipeline import orchestrator as _vp_orchestrator
 from flowboard.db.session import get_session
 from flowboard.db.video_pipeline_models import VideoPipelineRun
+
+logger = logging.getLogger(__name__)
+_active_vp_tasks: dict[str, asyncio.Task] = {}
+
+# indirection so tests can monkeypatch the coroutine fn
+_orchestrator_run = _vp_orchestrator.run
 
 router = APIRouter(prefix="/api/video-pipeline", tags=["video-pipeline"])
 
@@ -129,16 +138,26 @@ def get_run(short_id: str):
 
 
 @router.post("/runs/{short_id}/start", status_code=202)
-def start_run(short_id: str):
-    # Phase 2 stub: validate exists, flip pending->resolving. Phase 4 replaces
-    # this body with asyncio.create_task(orchestrator.run(run_id)).
+async def start_run(short_id: str):
     with get_session() as s:
         run = s.exec(select(VideoPipelineRun).where(
             VideoPipelineRun.short_id == short_id)).first()
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
-        if run.status == "pending":
-            run.status = "resolving"
-            s.add(run)
-            s.commit()
+
+    task = asyncio.create_task(_orchestrator_run(short_id), name=f"vp-run-{short_id}")
+    _active_vp_tasks[short_id] = task
+
+    def _cleanup(t: asyncio.Task) -> None:
+        _active_vp_tasks.pop(short_id, None)
+        exc = t.exception() if not t.cancelled() else None
+        if exc is not None:
+            logger.exception("video-pipeline run %s crashed", short_id, exc_info=exc)
+            try:
+                from flowboard.services.video_pipeline import transitions as tr
+                tr.set_run_status(short_id, "failed", error=str(exc), force=True)
+            except Exception:  # noqa: BLE001
+                pass
+
+    task.add_done_callback(_cleanup)
     return Response(status_code=202)
