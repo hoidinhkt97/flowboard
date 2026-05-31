@@ -49,7 +49,11 @@ export function InputCard({ label, kind, value, aspectRatio, onChange }: Props) 
         kind, source: "ai_gen", description: prompt,
         project_id: projectId, aspect_ratio: aspectRatio, variant_count: 4,
       });
-      setVariants(out.media_entries ?? []);
+      const entries = out.media_entries ?? [];
+      setVariants(entries);
+      if (entries.length > 0) {
+        onChange({ source: tab, media_id: entries[0].media_id, prompt });
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "generation failed");
     } finally { setBusy(false); }
