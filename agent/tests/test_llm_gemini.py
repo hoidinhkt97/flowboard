@@ -13,6 +13,7 @@ CLI args under test:
 """
 from __future__ import annotations
 
+import os
 import subprocess as _subprocess
 from dataclasses import dataclass
 
@@ -266,7 +267,11 @@ async def test_run_attachments_use_absolute_paths(monkeypatch, tmp_path):
     await p.run("describe", attachments=[str(img)])
     argv = list(state["calls"][0][0][0])
     prompt = argv[argv.index("-p") + 1]
-    assert "@/" in prompt
+    # The attachment must be referenced by an ABSOLUTE path so the CLI's cwd
+    # doesn't matter. Check portably: extract the token after the last '@' and
+    # assert it's absolute (POSIX abs starts with '/', Windows with 'C:\\').
+    token = prompt.rsplit("@", 1)[1]
+    assert os.path.isabs(token), token
 
 
 # ── run — error paths ─────────────────────────────────────────────────

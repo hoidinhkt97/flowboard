@@ -896,14 +896,16 @@ async def test_auto_prompt_raises_for_unknown_node(client):
 @pytest.mark.asyncio
 async def test_auto_prompt_caps_long_responses(client, monkeypatch):
     ids = _seed_board_with_chain()
-    long_text = "a" * 900
+    # auto_prompt caps composed prompts at 5000 chars (raised from 500); feed
+    # something over the ceiling so the truncation path is actually exercised.
+    long_text = "a" * 6000
 
     async def stub_run(*a, **k):
         return long_text
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
     out = await prompt_synth.auto_prompt(ids["target_id"])
-    assert len(out) <= 501
+    assert len(out) <= 5001
     assert out.endswith("…")
 
 

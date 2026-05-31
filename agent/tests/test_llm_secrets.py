@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,12 @@ def test_write_creates_parent_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert json.loads(nested.read_text()) == {"apiKeys": {"openai": "sk-1"}}
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX owner-only mode bits aren't representable on Windows; "
+    "os.chmod can only toggle the read-only bit, so st_mode reports 0o666. "
+    "The 0o600 guarantee holds on the macOS/Linux deploy targets.",
+)
 def test_write_sets_mode_0600(tmp_secrets_path: Path):
     """Critical — file must not be group/world readable. API keys live here."""
     secrets.write({"apiKeys": {"openai": "sk-secret"}})

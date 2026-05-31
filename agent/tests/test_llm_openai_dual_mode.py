@@ -267,10 +267,9 @@ def _route_dispatch(envelope_stdout: bytes, *, image_flag: Optional[str] = "--im
 async def test_run_text_via_cli_when_codex_available(
     tmp_secrets_path, monkeypatch
 ):
-    """Critical Windows fix: prompt is delivered via stdin (kwargs['input'])
-    rather than ``-p <prompt>`` argv. Same ``.cmd`` shim rationale as
-    claude_cli — cmd.exe re-parses argv for ``.cmd`` shims and mangles
-    long prompts. ``-p -`` argv signals stdin to codex."""
+    """codex's ``exec`` subcommand takes the prompt as a positional argument
+    (system + user folded into one string), not claude_cli's ``-p -`` stdin
+    delivery. Invocation: ``codex exec --skip-git-repo-check <system\\n\\nuser>``."""
     p = OpenAIProvider()
     _stub_resolve(monkeypatch)
     state = _stub_run(
@@ -287,11 +286,11 @@ async def test_run_text_via_cli_when_codex_available(
     assert len(dispatch_calls) == 1
     argv, kwargs = dispatch_calls[0]
     assert "exec" in argv
-    assert "-p" in argv and "-" in argv
-    # Prompt is on stdin, not in argv.
-    assert kwargs["input"] == b"hi"
-    assert "hi" not in argv
-    assert "--system" in argv
+    assert "--skip-git-repo-check" in argv
+    # Prompt is a positional arg (system + user combined), not `-p -` stdin.
+    assert "be terse\n\nhi" in argv
+    assert "-p" not in argv
+    assert kwargs.get("input") is None
 
 
 @pytest.mark.asyncio
