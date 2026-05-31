@@ -102,7 +102,8 @@ async def run(short_id: str, *, deps: Optional[Any] = None) -> None:
     tr.set_run_status(short_id, "generating", force=True)
 
     aspect = inputs.get("aspect_ratio", "9:16")
-    quality = inputs.get("quality", "standard")
+    quality = inputs.get("quality", "fast")
+    image_model = inputs.get("image_model") or None
     cap = int(inputs.get("concurrency_cap", 4))
     crossfade_sec = float(inputs.get("crossfade_sec", 0.0))
     audio = bool(inputs.get("audio_enabled", True))
@@ -124,7 +125,7 @@ async def run(short_id: str, *, deps: Optional[Any] = None) -> None:
             return
         await _run_product(short_id, run_obj_id, deps, project_id, product_index,
                            product_mid, character_mid, background_mid, script_brief,
-                           aspect, quality, sem, crossfade_sec, audio)
+                           aspect, quality, image_model, sem, crossfade_sec, audio)
 
     if _is_cancelled(short_id):
         tr.set_run_status(short_id, "cancelled", force=True)
@@ -139,8 +140,8 @@ async def run(short_id: str, *, deps: Optional[Any] = None) -> None:
 
 
 async def _run_product(short_id, run_id, deps, project_id, product_index, product_mid,
-                       character_mid, background_mid, script_brief, aspect, quality, sem,
-                       crossfade_sec, audio):
+                       character_mid, background_mid, script_brief, aspect, quality,
+                       image_model, sem, crossfade_sec, audio):
     with get_session() as s:
         videos = sorted(
             s.exec(select(VideoPipelineVideo).where(
@@ -172,7 +173,7 @@ async def _run_product(short_id, run_id, deps, project_id, product_index, produc
                 return
             await _run_video(short_id, run_id, deps, project_id, product_index, vidx,
                              vid_id, background_mid, script_brief, aspect, quality,
-                             crossfade_sec, audio)
+                             image_model, crossfade_sec, audio)
 
     await asyncio.gather(*[run_one_video(vid_id, vidx)
                            for vid_id, vidx, _c, _s in video_rows])
@@ -180,7 +181,7 @@ async def _run_product(short_id, run_id, deps, project_id, product_index, produc
 
 async def _run_video(short_id, run_id, deps, project_id, product_index, video_index,
                      video_id, background_mid, script_brief, aspect, quality,
-                     crossfade_sec, audio):
+                     image_model, crossfade_sec, audio):
     with get_session() as s:
         v = s.get(VideoPipelineVideo, video_id)
         composite_mid = v.composite_media_id
@@ -229,7 +230,7 @@ async def _run_video(short_id, run_id, deps, project_id, product_index, video_in
                 sb = await deps.gen_storyboard(
                     image_prompt=image_prompt, composite_media_id=composite_mid,
                     background_media_id=background_mid, project_id=project_id,
-                    aspect_ratio=aspect,
+                    aspect_ratio=aspect, image_model=image_model,
                     product_index=product_index, video_index=video_index, scene_index=sidx)
                 with get_session() as s:
                     sc = s.get(VideoPipelineScene, sid)

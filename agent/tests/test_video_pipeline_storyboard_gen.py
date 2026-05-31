@@ -8,7 +8,7 @@ async def test_generate_storyboard_uses_composite_and_background_refs():
     seen = {}
 
     class FakeSDK:
-        async def gen_image(self, prompt, project_id, aspect_ratio, ref_media_ids, variant_count, paygate_tier=None):
+        async def gen_image(self, prompt, project_id, aspect_ratio, ref_media_ids, variant_count, paygate_tier=None, image_model=None):
             seen["refs"] = ref_media_ids
             seen["count"] = variant_count
             seen["prompt"] = prompt

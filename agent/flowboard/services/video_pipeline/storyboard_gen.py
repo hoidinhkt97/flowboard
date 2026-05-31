@@ -20,6 +20,7 @@ async def generate_storyboard(
     background_media_id: str,
     project_id: str,
     aspect_ratio: str,
+    image_model: Optional[str] = None,
     paygate_tier: Optional[str] = None,
     sdk: Any = None,
     ingest: Optional[Callable[[list[dict]], None]] = None,
@@ -36,6 +37,7 @@ async def generate_storyboard(
         ref_media_ids=[composite_media_id, background_media_id],
         variant_count=1,
         paygate_tier=tier,
+        image_model=image_model or None,
     )
     if resp.get("error"):
         raise StoryboardGenError(str(resp["error"]))
