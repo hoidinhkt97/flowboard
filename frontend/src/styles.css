@@ -121,6 +121,31 @@ button:disabled {
   background: var(--panel);
 }
 
+.project-sidebar__nav-vp {
+  margin: 8px 10px 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--panel-high);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.project-sidebar__nav-vp:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--panel);
+}
+.project-sidebar__nav-vp--active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--panel);
+}
+
 .project-sidebar__row {
   display: flex;
   align-items: stretch;

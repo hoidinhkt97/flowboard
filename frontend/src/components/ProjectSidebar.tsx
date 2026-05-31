@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useBoardStore } from "../store/board";
 import { AccountPanel } from "./AccountPanel";
 import {
@@ -20,6 +21,10 @@ export function ProjectSidebar() {
   const createNewBoard = useBoardStore((s) => s.createNewBoard);
   const deleteBoardById = useBoardStore((s) => s.deleteBoardById);
   const renameBoard = useBoardStore((s) => s.renameBoard);
+
+  const navigate = useNavigate();
+  const location = useLocation();
+  const vpActive = location.pathname.startsWith("/video-pipeline");
 
   const [collapsed, setCollapsed] = useState(false);
   const [renamingId, setRenamingId] = useState<number | null>(null);
@@ -214,6 +219,14 @@ export function ProjectSidebar() {
       </div>
       {!collapsed && (
         <>
+          <button
+            type="button"
+            className={`project-sidebar__nav-vp${vpActive ? " project-sidebar__nav-vp--active" : ""}`}
+            onClick={() => navigate("/video-pipeline/new")}
+            aria-current={vpActive ? "page" : undefined}
+          >
+            <span aria-hidden="true">🎬</span> Video Pipeline
+          </button>
           <div className="project-sidebar__row">
             <button
               type="button"
