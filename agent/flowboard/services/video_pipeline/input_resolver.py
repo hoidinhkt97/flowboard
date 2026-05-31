@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
+from flowboard.services.flow_client import flow_client
 from flowboard.services.flow_sdk import get_flow_sdk
 from flowboard.services.llm import run_llm
 
@@ -47,6 +48,7 @@ async def resolve_ai_gen(
     project_id: str,
     aspect_ratio: str,
     variant_count: int = 4,
+    paygate_tier: Optional[str] = None,
     llm_runner: Optional[Callable[..., Any]] = None,
     sdk: Any = None,
 ) -> dict:
@@ -57,12 +59,16 @@ async def resolve_ai_gen(
     )).strip()
     if not full_prompt:
         raise InputResolveError("LLM returned empty prompt")
+    tier = paygate_tier or flow_client.paygate_tier
+    if not tier:
+        raise InputResolveError("paygate_tier_unknown")
     resp = await sdk.gen_image(
         prompt=full_prompt,
         project_id=project_id,
         aspect_ratio=to_image_aspect(aspect_ratio),
         ref_media_ids=None,
         variant_count=variant_count,
+        paygate_tier=tier,
     )
     if resp.get("error"):
         raise InputResolveError(str(resp["error"]))
