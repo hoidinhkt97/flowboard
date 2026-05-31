@@ -3,10 +3,14 @@ Later phases extend this same router (inputs/resolve, runs, regen, ...)."""
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
+import zipfile
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Response
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import select
 
@@ -16,7 +20,7 @@ from flowboard.services.video_pipeline import run_builder, serializers
 from flowboard.services.video_pipeline import input_resolver as ir
 from flowboard.services.video_pipeline import orchestrator as _vp_orchestrator
 from flowboard.db.session import get_session
-from flowboard.db.video_pipeline_models import VideoPipelineRun
+from flowboard.db.video_pipeline_models import VideoPipelineRun, VideoPipelineVideo
 
 logger = logging.getLogger(__name__)
 _active_vp_tasks: dict[str, asyncio.Task] = {}
@@ -161,3 +165,53 @@ async def start_run(short_id: str):
 
     task.add_done_callback(_cleanup)
     return Response(status_code=202)
+
+
+def _load_video(short_id: str, video_id: int):
+    with get_session() as s:
+        run = s.exec(select(VideoPipelineRun).where(
+            VideoPipelineRun.short_id == short_id)).first()
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        v = s.get(VideoPipelineVideo, video_id)
+        if v is None or v.run_id != run.id:
+            raise HTTPException(status_code=404, detail="video not found")
+        return run, v
+
+
+@router.get("/runs/{short_id}/videos/{video_id}/preview")
+def preview_video(short_id: str, video_id: int):
+    _run, v = _load_video(short_id, video_id)
+    if not v.merged_local_path or not Path(v.merged_local_path).exists():
+        raise HTTPException(status_code=404, detail="merged video not ready")
+    return FileResponse(v.merged_local_path, media_type="video/mp4")
+
+
+@router.get("/runs/{short_id}/videos/{video_id}/download")
+def download_video(short_id: str, video_id: int):
+    _run, v = _load_video(short_id, video_id)
+    if not v.merged_local_path or not Path(v.merged_local_path).exists():
+        raise HTTPException(status_code=404, detail="merged video not ready")
+    fname = f"{short_id}-p{v.product_index}-v{v.video_index}.mp4"
+    return FileResponse(v.merged_local_path, media_type="video/mp4", filename=fname)
+
+
+@router.get("/runs/{short_id}/download-all.zip")
+def download_all(short_id: str):
+    with get_session() as s:
+        run = s.exec(select(VideoPipelineRun).where(
+            VideoPipelineRun.short_id == short_id)).first()
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        videos = s.exec(select(VideoPipelineVideo).where(
+            VideoPipelineVideo.run_id == run.id)).all()
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        for v in videos:
+            if v.merged_local_path and Path(v.merged_local_path).exists():
+                zf.write(v.merged_local_path,
+                         arcname=f"p{v.product_index}-v{v.video_index}.mp4")
+    buf.seek(0)
+    headers = {"Content-Disposition": f'attachment; filename="{short_id}.zip"'}
+    return StreamingResponse(buf, media_type="application/zip", headers=headers)
