@@ -6310,4 +6310,24 @@ button:disabled {
   border-radius: 6px;
 }
 
+.vp-run__download-all {
+  display: inline-block;
+  padding: 0.4em 1em;
+  background: var(--accent, #7c5cbf);
+  color: #fff;
+  border-radius: 4px;
+  text-decoration: none;
+  font-size: 0.85rem;
+}
 
+.vp-video-card__download {
+  display: inline-block;
+  margin-top: 0.5rem;
+  padding: 0.3em 0.8em;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  text-decoration: none;
+  font-size: 0.8rem;
+  color: var(--accent, #7c5cbf);
+}

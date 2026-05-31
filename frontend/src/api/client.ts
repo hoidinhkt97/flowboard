@@ -1079,3 +1079,10 @@ export async function vpStartRun(shortId: string): Promise<void> {
 export function vpGetRun(shortId: string) {
   return api<VPRunDTO>(`/api/video-pipeline/runs/${shortId}`);
 }
+
+export function vpDownloadAllUrl(shortId: string) {
+  return `/api/video-pipeline/runs/${shortId}/download-all.zip`;
+}
+export function vpVideoDownloadUrl(shortId: string, videoId: number) {
+  return `/api/video-pipeline/runs/${shortId}/videos/${videoId}/download`;
+}

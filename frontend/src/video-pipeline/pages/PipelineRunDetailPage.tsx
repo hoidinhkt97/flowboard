@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useParams } from "react-router-dom";
 import { useRunStore } from "../runStore";
+import { vpDownloadAllUrl, vpVideoDownloadUrl } from "../../api/client";
 
 export function PipelineRunDetailPage() {
   const { shortId } = useParams<{ shortId: string }>();
@@ -30,6 +31,15 @@ export function PipelineRunDetailPage() {
           <div className="vp-run__progress-bar" style={{ width: `${pct}%` }} />
           <span>{clips_done}/{clips_total} clip · {pct}%</span>
         </div>
+        {run.status === "done" && (
+          <a
+            href={vpDownloadAllUrl(run.short_id)}
+            download
+            className="vp-run__download-all"
+          >
+            ⤓ Tải tất cả .zip
+          </a>
+        )}
       </header>
 
       {run.products.map((p) => (
@@ -56,6 +66,15 @@ export function PipelineRunDetailPage() {
               </div>
               {v.merged_url && (
                 <video className="vp-video-card__merged" src={v.merged_url} controls />
+              )}
+              {v.status === "done" && v.merged_url && (
+                <a
+                  href={vpVideoDownloadUrl(run.short_id, v.id)}
+                  download
+                  className="vp-video-card__download"
+                >
+                  ⤓ Tải video
+                </a>
               )}
             </div>
           ))}
