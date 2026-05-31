@@ -75,37 +75,51 @@ async def generate_clip(
     operation_names = dispatch.get("operation_names") or []
     if not operation_names:
         raise ClipGenError("no async operation returned")
+    # workflows is set for low-priority / workflow-based models — pass it
+    # through to check_async exactly as canvas processor.py does.
+    workflows = dispatch.get("workflows") or None
+
+    done_by_name: dict[str, bool] = {n: False for n in operation_names}
+    entry_by_name: dict[str, dict] = {}
+    op_errors: dict[str, str] = {}
 
     for _ in range(max_cycles):
-        poll = await sdk.check_async(operation_names=operation_names, workflows=None)
-        if poll.get("error"):
-            await sleep(interval_s)
-            continue
-
-        operations = poll.get("operations") or []
-        done_seen = False
-        for op in operations:
-            if op.get("error"):
-                raise ClipGenError(str(op["error"]))
-            if not op.get("done"):
-                continue
-
-            done_seen = True
-            entries = op.get("media_entries") or []
-            if not entries or not entries[0].get("media_id"):
-                raise ClipGenError("done with no media entries")
-
-            with_urls = [e for e in entries if e.get("url")]
-            if with_urls:
-                try:
-                    ingest(with_urls)
-                except Exception:  # noqa: BLE001
-                    pass
-            return entries[0]["media_id"]
-
-        if done_seen:
-            raise ClipGenError("done with no media entries")
-
+        # Sleep first, then poll — mirrors canvas _handle_gen_video order.
         await sleep(interval_s)
+        poll = await sdk.check_async(operation_names, workflows=workflows)
+        if poll.get("error"):
+            continue
+        for op in poll.get("operations") or []:
+            if not isinstance(op, dict):
+                continue
+            name = op.get("name")
+            if not isinstance(name, str) or done_by_name.get(name, False):
+                continue
+            err = op.get("error")
+            if isinstance(err, str) and err:
+                done_by_name[name] = True
+                op_errors[name] = err
+                continue
+            if op.get("done"):
+                done_by_name[name] = True
+                for e in op.get("media_entries") or []:
+                    if isinstance(e, dict) and e.get("media_id"):
+                        entry_by_name[name] = e
+                        break
+        if all(done_by_name.values()):
+            break
 
-    raise ClipGenError("clip generation timeout")
+    # Ingest succeeded entries (same as canvas — only URLs we actually have).
+    succeeded = list(entry_by_name.values())
+    with_urls = [e for e in succeeded if e.get("url")]
+    if with_urls:
+        try:
+            ingest(with_urls)
+        except Exception:  # noqa: BLE001
+            pass
+
+    if succeeded:
+        return succeeded[0]["media_id"]
+
+    first_err = next(iter(op_errors.values()), "timeout_waiting_video")
+    raise ClipGenError(first_err)
