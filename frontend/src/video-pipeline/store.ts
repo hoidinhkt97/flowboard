@@ -15,7 +15,6 @@ export interface WizardState {
   scriptBrief: string;
   aspectRatio: "9:16" | "1:1" | "16:9";
   sceneCount: number;
-  quality: "fast" | "standard" | "high";
   crossfadeSec: number;
   audioEnabled: boolean;
   videoCount: number;
@@ -41,7 +40,6 @@ const INITIAL = {
   scriptBrief: "",
   aspectRatio: "9:16" as const,
   sceneCount: 3,
-  quality: "standard" as const,
   crossfadeSec: 0.4,
   audioEnabled: true,
   videoCount: 2,
@@ -63,7 +61,6 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     set({
       aspectRatio: (params.aspect_ratio as WizardState["aspectRatio"]) ?? get().aspectRatio,
       sceneCount: (params.scene_count as number) ?? get().sceneCount,
-      quality: (params.quality as WizardState["quality"]) ?? get().quality,
       crossfadeSec: (params.crossfade_sec as number) ?? get().crossfadeSec,
       audioEnabled: (params.audio_enabled as boolean) ?? get().audioEnabled,
       videoCount: (params.video_count as number) ?? get().videoCount,
@@ -89,7 +86,6 @@ export function wizardToInputs(s: WizardState): Record<string, unknown> {
     aspect_ratio: s.aspectRatio,
     video_count: s.videoCount,
     scene_count: s.sceneCount,
-    quality: s.quality,
     crossfade_sec: s.crossfadeSec,
     audio_enabled: s.audioEnabled,
     concurrency_cap: s.concurrencyCap,

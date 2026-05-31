@@ -1076,6 +1076,20 @@ export async function vpStartRun(shortId: string): Promise<void> {
   }
 }
 
+export interface VPRunSummaryDTO {
+  short_id: string;
+  type_key: string;
+  status: string;
+  cancelled: boolean;
+  created_at: string;
+  finished_at: string | null;
+  error: string | null;
+}
+
+export function vpListRuns() {
+  return api<VPRunSummaryDTO[]>("/api/video-pipeline/runs");
+}
+
 export function vpGetRun(shortId: string) {
   return api<VPRunDTO>(`/api/video-pipeline/runs/${shortId}`);
 }
@@ -1085,4 +1099,26 @@ export function vpDownloadAllUrl(shortId: string) {
 }
 export function vpVideoDownloadUrl(shortId: string, videoId: number) {
   return `/api/video-pipeline/runs/${shortId}/videos/${videoId}/download`;
+}
+
+export async function vpCancelRun(shortId: string): Promise<void> {
+  await api<unknown>(`/api/video-pipeline/runs/${shortId}/cancel`, { method: "POST" });
+}
+
+export async function vpPatchScene(
+  shortId: string, sceneId: number,
+  data: { image_prompt?: string; video_prompt?: string },
+): Promise<void> {
+  await api<unknown>(`/api/video-pipeline/runs/${shortId}/scenes/${sceneId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function vpRegenStoryboard(shortId: string, sceneId: number): Promise<void> {
+  await api<unknown>(`/api/video-pipeline/runs/${shortId}/scenes/${sceneId}/regen-storyboard`, { method: "POST" });
+}
+
+export async function vpRegenClip(shortId: string, sceneId: number): Promise<void> {
+  await api<unknown>(`/api/video-pipeline/runs/${shortId}/scenes/${sceneId}/regen-clip`, { method: "POST" });
 }
