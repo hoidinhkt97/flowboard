@@ -20,9 +20,12 @@ from flowboard.services.video_pipeline import run_builder, serializers
 from flowboard.services.video_pipeline import input_resolver as ir
 from flowboard.services.video_pipeline import orchestrator as _vp_orchestrator
 from flowboard.db.session import get_session
+import shutil
+
 from flowboard.db.video_pipeline_models import (
-    VideoPipelineRun, VideoPipelineVideo, VideoPipelineScene,
+    VideoPipelineRun, VideoPipelineProduct, VideoPipelineVideo, VideoPipelineScene,
 )
+from flowboard.services.video_pipeline import storage as _vp_storage
 from flowboard.services.video_pipeline import regen as _regen
 
 logger = logging.getLogger(__name__)
@@ -127,6 +130,22 @@ class RunCreate(BaseModel):
     inputs: dict
 
 
+@router.get("/runs")
+def list_runs():
+    with get_session() as s:
+        rows = s.exec(
+            select(VideoPipelineRun).order_by(VideoPipelineRun.id.desc()).limit(50)
+        ).all()
+    return [
+        {
+            "short_id": r.short_id, "type_key": r.type_key, "status": r.status,
+            "cancelled": r.cancelled, "created_at": r.created_at,
+            "finished_at": r.finished_at, "error": r.error,
+        }
+        for r in rows
+    ]
+
+
 @router.post("/runs", status_code=201)
 def create_run(body: RunCreate):
     try:
@@ -218,6 +237,27 @@ def download_all(short_id: str):
     buf.seek(0)
     headers = {"Content-Disposition": f'attachment; filename="{short_id}.zip"'}
     return StreamingResponse(buf, media_type="application/zip", headers=headers)
+
+
+# ---- Delete run ----
+
+@router.delete("/runs/{short_id}", status_code=204)
+def delete_run(short_id: str):
+    with get_session() as s:
+        run = s.exec(select(VideoPipelineRun).where(
+            VideoPipelineRun.short_id == short_id)).first()
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        rid = run.id
+        for model in (VideoPipelineScene, VideoPipelineVideo, VideoPipelineProduct):
+            for row in s.exec(select(model).where(model.run_id == rid)).all():
+                s.delete(row)
+        s.delete(run)
+        s.commit()
+    base = _vp_storage.run_dir(short_id)
+    if base.exists():
+        shutil.rmtree(base, ignore_errors=True)
+    return Response(status_code=204)
 
 
 # ---- Cancel ----
