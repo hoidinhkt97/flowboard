@@ -1,9 +1,24 @@
 """Tests for POST /api/requests and GET /api/requests/:id, plus the worker."""
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
+from flowboard.services.flow_client import FlowClient
+from flowboard.services.registry import registry
 from flowboard.worker.processor import WorkerController
+
+
+@pytest.fixture(autouse=True)
+def _seed_registry():
+    """Seed a tier-bearing FlowClient so account_id=None requests get a tier."""
+    fc = FlowClient()
+    fc._paygate_tier = "PAYGATE_TIER_ONE"
+    fake_ws = AsyncMock()
+    fc.set_extension(fake_ws)
+    registry._conns[0] = (fc, fake_ws)
+    yield
+    registry._conns.pop(0, None)
 
 
 def _board(client, auth, name="T"):

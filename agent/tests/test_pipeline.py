@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlmodel import Session, select
@@ -11,6 +12,20 @@ from flowboard.db.models import (
     Board, BoardFlowProject, Edge, Node, PipelineRun, Plan, Request,
 )
 from flowboard.services import pipeline_executor
+from flowboard.services.flow_client import FlowClient
+from flowboard.services.registry import registry
+
+
+@pytest.fixture(autouse=True)
+def _seed_registry():
+    """Seed a tier-bearing FlowClient so account_id=None requests get a tier."""
+    fc = FlowClient()
+    fc._paygate_tier = "PAYGATE_TIER_ONE"
+    fake_ws = AsyncMock()
+    fc.set_extension(fake_ws)
+    registry._conns[0] = (fc, fake_ws)
+    yield
+    registry._conns.pop(0, None)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -225,7 +240,7 @@ def _make_board_with_project(client, auth, project_id="abcd1234"):
 @pytest.mark.asyncio
 async def test_run_pipeline_dispatches_image_in_topo_order(client, auth, monkeypatch):
     """Image node with a prompt should hit gen_image; non-gen nodes are skipped."""
-    from flowboard.services import flow_sdk
+    from flowboard.worker import processor as proc_flow
 
     dispatch_log: list[dict] = []
 
@@ -234,7 +249,7 @@ async def test_run_pipeline_dispatches_image_in_topo_order(client, auth, monkeyp
             dispatch_log.append(kwargs)
             return {"raw": {}, "media_ids": ["m-1"], "media_entries": []}
 
-    monkeypatch.setattr(flow_sdk, "_sdk", _Stub())
+    monkeypatch.setattr(proc_flow, "get_flow_sdk", lambda fc=None: _Stub())
 
     b = _make_board_with_project(client, auth)
     plan_id = _make_plan(
@@ -291,13 +306,13 @@ async def test_run_pipeline_dispatches_image_in_topo_order(client, auth, monkeyp
 
 @pytest.mark.asyncio
 async def test_run_pipeline_marks_downstream_failed_on_upstream_error(client, auth, monkeypatch):
-    from flowboard.services import flow_sdk
+    from flowboard.worker import processor as proc_flow
 
     class _Stub:
         async def gen_image(self, **kwargs):
             return {"raw": {}, "error": "captcha_failed"}
 
-    monkeypatch.setattr(flow_sdk, "_sdk", _Stub())
+    monkeypatch.setattr(proc_flow, "get_flow_sdk", lambda fc=None: _Stub())
 
     b = _make_board_with_project(client, auth)
     plan_id = _make_plan(
