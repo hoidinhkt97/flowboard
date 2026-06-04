@@ -12,7 +12,7 @@ CLI, so it was dropped from both UI and registry.
 from __future__ import annotations
 
 import logging
-from typing import Literal, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 from .base import LLMError, LLMProvider
 from .claude import ClaudeProvider
@@ -20,6 +20,10 @@ from .custom_openai import CustomOpenAIProvider
 from .gemini import GeminiProvider
 from .openai import OpenAIProvider
 from . import secrets
+from .api_providers import make_account_provider
+
+if TYPE_CHECKING:
+    from flowboard.db.models import Account
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,7 @@ async def run_llm(
     system_prompt: Optional[str] = None,
     attachments: Optional[list[str]] = None,
     timeout: float = 90.0,
+    account: Optional["Account"] = None,
 ) -> str:
     """Feature-routed LLM dispatch.
 
@@ -72,6 +77,26 @@ async def run_llm(
          eat a longer subprocess / HTTP timeout.
       4. Dispatch.
     """
+    # Per-user API key path (takes priority over global secrets.json)
+    if account is not None:
+        provider = make_account_provider(account)
+        if provider is not None:
+            if attachments and not provider.supports_vision:
+                raise LLMError(
+                    f"Provider {provider.name} does not support vision attachments."
+                )
+            if not await provider.is_available():
+                raise LLMError(
+                    f"Provider {provider.name} is unavailable. "
+                    "Check your API key in Account Settings."
+                )
+            return await provider.run(
+                user_prompt,
+                system_prompt=system_prompt,
+                attachments=attachments,
+                timeout=timeout,
+            )
+    # Fall through: use global secrets.json path
     config = secrets.read_active_providers()
     provider_name = config.get(feature)
     if provider_name is None:

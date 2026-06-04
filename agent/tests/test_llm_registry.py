@@ -240,3 +240,75 @@ async def test_real_claude_provider_delegates_to_claude_cli():
     assert kwargs["system_prompt"] == "s"
     assert kwargs["attachments"] == ["/x.jpg"]
     assert kwargs["timeout"] == 5.0
+
+
+@pytest.mark.asyncio
+async def test_run_llm_uses_account_provider_when_configured(monkeypatch):
+    """run_llm with an account that has a key should use the API provider."""
+    from unittest.mock import AsyncMock, MagicMock
+    from flowboard.services.llm import registry
+    from flowboard.db.models import Account
+
+    acct = Account(id=42, email="a@b.com", password_hash="x",
+                   llm_provider="claude", llm_api_key_enc=b"enc")
+
+    fake_provider = MagicMock()
+    fake_provider.is_available = AsyncMock(return_value=True)
+    fake_provider.supports_vision = False
+    fake_provider.run = AsyncMock(return_value="api result")
+
+    monkeypatch.setattr(
+        "flowboard.services.llm.registry.make_account_provider",
+        lambda a: fake_provider,
+    )
+
+    result = await registry.run_llm("auto_prompt", "test", account=acct)
+    assert result == "api result"
+    fake_provider.run.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_run_llm_falls_back_when_no_account_key(monkeypatch):
+    """run_llm with an account without a key falls through to secrets.json."""
+    from unittest.mock import AsyncMock, MagicMock
+    from flowboard.services.llm import registry
+    from flowboard.db.models import Account
+
+    acct = Account(id=42, email="a@b.com", password_hash="x")  # no key
+
+    monkeypatch.setattr(
+        "flowboard.services.llm.registry.make_account_provider",
+        lambda a: None,
+    )
+    monkeypatch.setattr(
+        "flowboard.services.llm.registry.secrets.read_active_providers",
+        lambda: {"auto_prompt": "claude"},
+    )
+    global_provider = MagicMock()
+    global_provider.is_available = AsyncMock(return_value=True)
+    global_provider.supports_vision = False
+    global_provider.run = AsyncMock(return_value="global result")
+    monkeypatch.setitem(registry._PROVIDERS, "claude", global_provider)
+
+    result = await registry.run_llm("auto_prompt", "test", account=acct)
+    assert result == "global result"
+
+
+@pytest.mark.asyncio
+async def test_run_llm_without_account_uses_global_path(monkeypatch):
+    """run_llm(feature, prompt) without account still uses secrets.json."""
+    from unittest.mock import AsyncMock, MagicMock
+    from flowboard.services.llm import registry
+
+    monkeypatch.setattr(
+        "flowboard.services.llm.registry.secrets.read_active_providers",
+        lambda: {"planner": "gemini"},
+    )
+    global_provider = MagicMock()
+    global_provider.is_available = AsyncMock(return_value=True)
+    global_provider.supports_vision = False
+    global_provider.run = AsyncMock(return_value="global planner result")
+    monkeypatch.setitem(registry._PROVIDERS, "gemini", global_provider)
+
+    result = await registry.run_llm("planner", "make a plan")
+    assert result == "global planner result"
