@@ -238,3 +238,80 @@ def test_media_bytes_accepts_media_prefix(client, tmp_path, monkeypatch):
     r = client.get(f"/media/media/{mid}")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("image/jpeg")
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_cache_uploads_to_s3_when_configured(monkeypatch):
+    """fetch_and_cache should upload bytes to S3 and set s3_key on the Asset row."""
+    import respx
+    import httpx
+    from flowboard.services import media as media_svc, object_storage
+    from flowboard.db.models import Asset
+    from flowboard.db import get_session
+    from sqlmodel import select
+
+    media_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    gcs_url = "https://flow-content.google/test/img.jpg"
+    account_id = 42  # arbitrary int; not a FK-enforced account in this test
+    with get_session() as s:
+        s.add(Asset(uuid_media_id=media_id, url=gcs_url, kind="image"))
+        s.commit()
+
+    uploaded: list[str] = []
+
+    async def fake_upload(key: str, data: bytes, content_type: str) -> str:
+        uploaded.append(key)
+        return key
+
+    monkeypatch.setattr(object_storage, "is_configured", lambda: True)
+    monkeypatch.setattr(object_storage, "upload_bytes", fake_upload)
+
+    with respx.mock:
+        respx.get(gcs_url).mock(
+            return_value=httpx.Response(
+                200, content=b"imgbytes",
+                headers={"content-type": "image/jpeg"},
+            )
+        )
+        result = await media_svc.fetch_and_cache(media_id, account_id=account_id)
+
+    assert result is not None
+    assert len(uploaded) == 1
+    assert uploaded[0].startswith(f"{account_id}/")
+    assert uploaded[0].endswith(".jpg")
+
+    with get_session() as s:
+        asset = s.exec(select(Asset).where(Asset.uuid_media_id == media_id)).first()
+    assert asset.s3_key == uploaded[0]
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_cache_skips_s3_when_not_configured(monkeypatch):
+    import respx
+    import httpx
+    from flowboard.services import media as media_svc, object_storage
+    from flowboard.db.models import Asset
+    from flowboard.db import get_session
+    from sqlmodel import select
+
+    media_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    gcs_url = "https://flow-content.google/test/img2.jpg"
+    with get_session() as s:
+        s.add(Asset(uuid_media_id=media_id, url=gcs_url, kind="image"))
+        s.commit()
+
+    monkeypatch.setattr(object_storage, "is_configured", lambda: False)
+
+    with respx.mock:
+        respx.get(gcs_url).mock(
+            return_value=httpx.Response(
+                200, content=b"imgbytes",
+                headers={"content-type": "image/jpeg"},
+            )
+        )
+        result = await media_svc.fetch_and_cache(media_id)
+
+    assert result is not None
+    with get_session() as s:
+        asset = s.exec(select(Asset).where(Asset.uuid_media_id == media_id)).first()
+    assert asset.s3_key is None

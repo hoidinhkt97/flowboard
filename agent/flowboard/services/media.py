@@ -76,7 +76,7 @@ def cached_path(media_id: str) -> Optional[Path]:
     return _cache_glob(media_id)
 
 
-def ingest_urls(urls: list[dict[str, Any]]) -> int:
+def ingest_urls(urls: list[dict[str, Any]], account_id: Optional[int] = None) -> int:
     """Upsert Asset rows keyed by uuid_media_id. Returns count touched."""
     touched = 0
     with get_session() as s:
@@ -97,11 +97,13 @@ def ingest_urls(urls: list[dict[str, Any]]) -> int:
                 select(Asset).where(Asset.uuid_media_id == media_id)
             ).first()
             if row is None:
-                row = Asset(uuid_media_id=media_id, url=url, kind=kind)
+                row = Asset(uuid_media_id=media_id, url=url, kind=kind, account_id=account_id)
             else:
                 row.url = url
                 if not row.kind:
                     row.kind = kind
+                if account_id is not None and row.account_id is None:
+                    row.account_id = account_id
             s.add(row)
             touched += 1
         s.commit()
@@ -145,11 +147,16 @@ def ingest_inline_bytes(
     return True
 
 
-async def fetch_and_cache(media_id: str) -> Optional[tuple[bytes, str, Path]]:
+async def fetch_and_cache(
+    media_id: str, *, account_id: Optional[int] = None
+) -> Optional[tuple[bytes, str, Path]]:
     """If the Asset has a URL and no cached file, fetch bytes, cache, return.
 
     Returns ``(bytes, mime, path)`` on success, ``None`` if there is no URL,
     the URL is no longer valid, or the fetch fails.
+
+    When ``account_id`` is provided and S3 is configured, the fetched bytes
+    are also uploaded to S3 and the Asset row's ``s3_key`` is set.
     """
     if not is_valid_media_id(media_id):
         return None
@@ -191,6 +198,18 @@ async def fetch_and_cache(media_id: str) -> Optional[tuple[bytes, str, Path]]:
         logger.error("failed to write cache %s: %s", path, exc)
         return None
 
+    # Upload to S3 when configured and account_id is known
+    s3_key: Optional[str] = None
+    if account_id is not None:
+        from flowboard.services import object_storage
+        if object_storage.is_configured():
+            key = object_storage.s3_key_for(account_id, media_id, ext)
+            try:
+                await object_storage.upload_bytes(key, resp.content, mime)
+                s3_key = key
+            except Exception as exc:  # noqa: BLE001
+                logger.error("s3 upload failed for %s: %s", media_id, exc)
+
     with get_session() as s:
         row = s.exec(
             select(Asset).where(Asset.uuid_media_id == media_id)
@@ -198,6 +217,8 @@ async def fetch_and_cache(media_id: str) -> Optional[tuple[bytes, str, Path]]:
         if row is not None:
             row.local_path = str(path)
             row.mime = mime
+            if s3_key is not None:
+                row.s3_key = s3_key
             s.add(row)
             s.commit()
 
