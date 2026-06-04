@@ -6,16 +6,16 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 
-def _board(client, name="T"):
-    return client.post("/api/boards", json={"name": name}).json()
+def _board(client, auth, name="T"):
+    return client.post("/api/boards", json={"name": name}, headers=auth).json()
 
 
-def test_bootstrap_creates_project_first_time(client):
+def test_bootstrap_creates_project_first_time(client, auth):
     async def fake_create(title, tool="PINHOLE"):
         assert title == "Scene 01"
         return {"raw": {"status": 200}, "project_id": "flow-proj-1"}
 
-    b = _board(client, "Scene 01")
+    b = _board(client, auth, "Scene 01")
     with patch(
         "flowboard.routes.projects.get_flow_sdk"
     ) as m:
@@ -37,17 +37,17 @@ def test_bootstrap_creates_project_first_time(client):
         assert m.return_value.create_project.await_count == 1
 
 
-def test_get_returns_404_when_no_binding(client):
-    b = _board(client)
+def test_get_returns_404_when_no_binding(client, auth):
+    b = _board(client, auth)
     r = client.get(f"/api/boards/{b['id']}/project")
     assert r.status_code == 404
 
 
-def test_get_returns_existing_binding(client):
+def test_get_returns_existing_binding(client, auth):
     async def fake_create(title, tool="PINHOLE"):
         return {"raw": {}, "project_id": "pid-x"}
 
-    b = _board(client)
+    b = _board(client, auth)
     with patch("flowboard.routes.projects.get_flow_sdk") as m:
         m.return_value.create_project = AsyncMock(side_effect=fake_create)
         client.post(f"/api/boards/{b['id']}/project")
@@ -57,11 +57,11 @@ def test_get_returns_existing_binding(client):
     assert r.json() == {"flow_project_id": "pid-x", "created": False}
 
 
-def test_bootstrap_surfaces_sdk_error_as_502(client):
+def test_bootstrap_surfaces_sdk_error_as_502(client, auth):
     async def failing_create(title, tool="PINHOLE"):
         return {"raw": {"error": "extension_disconnected"}, "error": "extension_disconnected"}
 
-    b = _board(client)
+    b = _board(client, auth)
     with patch("flowboard.routes.projects.get_flow_sdk") as m:
         m.return_value.create_project = AsyncMock(side_effect=failing_create)
         r = client.post(f"/api/boards/{b['id']}/project")
@@ -76,11 +76,11 @@ def test_bootstrap_rejects_unknown_board(client):
     assert r.status_code == 404
 
 
-def test_bootstrap_502_when_flow_returns_no_project_id(client):
+def test_bootstrap_502_when_flow_returns_no_project_id(client, auth):
     async def missing_id(title, tool="PINHOLE"):
         return {"raw": {"status": 200}, "error": "no_project_id_in_response"}
 
-    b = _board(client)
+    b = _board(client, auth)
     with patch("flowboard.routes.projects.get_flow_sdk") as m:
         m.return_value.create_project = AsyncMock(side_effect=missing_id)
         r = client.post(f"/api/boards/{b['id']}/project")
@@ -88,7 +88,7 @@ def test_bootstrap_502_when_flow_returns_no_project_id(client):
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_is_concurrency_safe(client):
+async def test_bootstrap_is_concurrency_safe(client, auth):
     """Two parallel callers should not produce two bindings."""
     call_count = 0
 
@@ -97,7 +97,7 @@ async def test_bootstrap_is_concurrency_safe(client):
         call_count += 1
         return {"raw": {}, "project_id": f"pid-{call_count}"}
 
-    b = _board(client)
+    b = _board(client, auth)
     with patch("flowboard.routes.projects.get_flow_sdk") as m:
         m.return_value.create_project = AsyncMock(side_effect=fake_create)
         r1 = client.post(f"/api/boards/{b['id']}/project")

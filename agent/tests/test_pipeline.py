@@ -16,8 +16,8 @@ from flowboard.services import pipeline_executor
 # ── helpers ───────────────────────────────────────────────────────────────
 
 
-def _make_board(client, name="P") -> dict:
-    return client.post("/api/boards", json={"name": name}).json()
+def _make_board(client, auth, name="P") -> dict:
+    return client.post("/api/boards", json={"name": name}, headers=auth).json()
 
 
 def _make_plan(board_id: int, spec: dict) -> int:
@@ -66,8 +66,8 @@ def test_auto_layout_stacks_siblings_vertically():
 # ── materialize_plan ──────────────────────────────────────────────────────
 
 
-def test_materialize_plan_creates_nodes_and_edges(client):
-    b = _make_board(client)
+def test_materialize_plan_creates_nodes_and_edges(client, auth):
+    b = _make_board(client, auth)
     plan_id = _make_plan(
         b["id"],
         {
@@ -96,12 +96,12 @@ def test_materialize_plan_creates_nodes_and_edges(client):
     assert src.x < tgt.x
 
 
-def test_materialize_plan_resolves_existing_short_id(client):
+def test_materialize_plan_resolves_existing_short_id(client, auth):
     """An edge endpoint that uses #shortId should resolve to the existing node."""
-    b = _make_board(client)
+    b = _make_board(client, auth)
     # Pre-create a node we'll reference.
     n = client.post(
-        "/api/nodes", json={"board_id": b["id"], "type": "character"}
+        "/api/nodes", json={"board_id": b["id"], "type": "character"}, headers=auth
     ).json()
     short_id = n["short_id"]
     plan_id = _make_plan(
@@ -121,8 +121,8 @@ def test_materialize_plan_resolves_existing_short_id(client):
         assert edges[0].source_id == existing.id
 
 
-def test_materialize_plan_skips_unresolvable_endpoint(client):
-    b = _make_board(client)
+def test_materialize_plan_skips_unresolvable_endpoint(client, auth):
+    b = _make_board(client, auth)
     plan_id = _make_plan(
         b["id"],
         {
@@ -142,8 +142,8 @@ def test_materialize_plan_skips_unresolvable_endpoint(client):
         assert len(s.exec(select(Node).where(Node.board_id == b["id"])).all()) == 1
 
 
-def test_materialize_plan_idempotent(client):
-    b = _make_board(client)
+def test_materialize_plan_idempotent(client, auth):
+    b = _make_board(client, auth)
     plan_id = _make_plan(
         b["id"],
         {"nodes": [{"tmp_id": "i", "type": "image"}], "edges": []},
@@ -162,7 +162,7 @@ def test_materialize_plan_idempotent(client):
 # ── routes ────────────────────────────────────────────────────────────────
 
 
-def test_post_plan_run_returns_pipeline_run(client, monkeypatch):
+def test_post_plan_run_returns_pipeline_run(client, auth, monkeypatch):
     # Stub run_pipeline so we don't actually execute anything.
     async def noop(rid, **kwargs):
         return None
@@ -171,7 +171,7 @@ def test_post_plan_run_returns_pipeline_run(client, monkeypatch):
         "flowboard.routes.plans.run_pipeline", noop
     )
 
-    b = _make_board(client)
+    b = _make_board(client, auth)
     plan_id = _make_plan(
         b["id"],
         {"nodes": [{"tmp_id": "i", "type": "image"}], "edges": []},
@@ -187,14 +187,14 @@ def test_post_plan_run_returns_pipeline_run(client, monkeypatch):
         assert len(nodes) == 1
 
 
-def test_post_plan_run_idempotent(client, monkeypatch):
+def test_post_plan_run_idempotent(client, auth, monkeypatch):
     async def slow(rid, **kwargs):
         # Hold the run in-flight for long enough that two posts overlap.
         await asyncio.sleep(0.5)
 
     monkeypatch.setattr("flowboard.routes.plans.run_pipeline", slow)
 
-    b = _make_board(client)
+    b = _make_board(client, auth)
     plan_id = _make_plan(
         b["id"], {"nodes": [{"tmp_id": "i", "type": "image"}], "edges": []}
     )
@@ -214,8 +214,8 @@ def test_get_pipeline_run_returns_404_when_missing(client):
 # ── run_pipeline ─────────────────────────────────────────────────────────
 
 
-def _make_board_with_project(client, project_id="abcd1234"):
-    b = _make_board(client)
+def _make_board_with_project(client, auth, project_id="abcd1234"):
+    b = _make_board(client, auth)
     with get_session() as s:
         s.add(BoardFlowProject(board_id=b["id"], flow_project_id=project_id))
         s.commit()
@@ -223,7 +223,7 @@ def _make_board_with_project(client, project_id="abcd1234"):
 
 
 @pytest.mark.asyncio
-async def test_run_pipeline_dispatches_image_in_topo_order(client, monkeypatch):
+async def test_run_pipeline_dispatches_image_in_topo_order(client, auth, monkeypatch):
     """Image node with a prompt should hit gen_image; non-gen nodes are skipped."""
     from flowboard.services import flow_sdk
 
@@ -236,7 +236,7 @@ async def test_run_pipeline_dispatches_image_in_topo_order(client, monkeypatch):
 
     monkeypatch.setattr(flow_sdk, "_sdk", _Stub())
 
-    b = _make_board_with_project(client)
+    b = _make_board_with_project(client, auth)
     plan_id = _make_plan(
         b["id"],
         {
@@ -290,7 +290,7 @@ async def test_run_pipeline_dispatches_image_in_topo_order(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_pipeline_marks_downstream_failed_on_upstream_error(client, monkeypatch):
+async def test_run_pipeline_marks_downstream_failed_on_upstream_error(client, auth, monkeypatch):
     from flowboard.services import flow_sdk
 
     class _Stub:
@@ -299,7 +299,7 @@ async def test_run_pipeline_marks_downstream_failed_on_upstream_error(client, mo
 
     monkeypatch.setattr(flow_sdk, "_sdk", _Stub())
 
-    b = _make_board_with_project(client)
+    b = _make_board_with_project(client, auth)
     plan_id = _make_plan(
         b["id"],
         {

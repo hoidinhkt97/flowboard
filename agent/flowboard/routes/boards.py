@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlmodel import delete as sql_delete, select
 
 from flowboard.db import get_session
 from flowboard.db.models import (
+    Account,
     Asset,
     Board,
     BoardFlowProject,
@@ -15,6 +16,8 @@ from flowboard.db.models import (
     PlanRevision,
     Request,
 )
+from flowboard.db.scoping import owned_or_404
+from flowboard.deps import get_current_account
 
 router = APIRouter(prefix="/api/boards", tags=["boards"])
 
@@ -28,15 +31,15 @@ class BoardUpdate(BaseModel):
 
 
 @router.get("")
-def list_boards():
+def list_boards(acct: Account = Depends(get_current_account)):
     with get_session() as s:
-        return s.exec(select(Board)).all()
+        return s.exec(select(Board).where(Board.account_id == acct.id)).all()
 
 
 @router.post("")
-def create_board(body: BoardCreate):
+def create_board(body: BoardCreate, acct: Account = Depends(get_current_account)):
     with get_session() as s:
-        board = Board(name=body.name)
+        board = Board(name=body.name, account_id=acct.id)
         s.add(board)
         s.commit()
         s.refresh(board)
@@ -44,22 +47,18 @@ def create_board(body: BoardCreate):
 
 
 @router.get("/{board_id}")
-def get_board(board_id: int):
+def get_board(board_id: int, acct: Account = Depends(get_current_account)):
     with get_session() as s:
-        board = s.get(Board, board_id)
-        if not board:
-            raise HTTPException(404, "board not found")
+        board = owned_or_404(s, Board, board_id, acct.id)
         nodes = s.exec(select(Node).where(Node.board_id == board_id)).all()
         edges = s.exec(select(Edge).where(Edge.board_id == board_id)).all()
         return {"board": board, "nodes": nodes, "edges": edges}
 
 
 @router.patch("/{board_id}")
-def update_board(board_id: int, body: BoardUpdate):
+def update_board(board_id: int, body: BoardUpdate, acct: Account = Depends(get_current_account)):
     with get_session() as s:
-        board = s.get(Board, board_id)
-        if not board:
-            raise HTTPException(404, "board not found")
+        board = owned_or_404(s, Board, board_id, acct.id)
         board.name = body.name
         s.add(board)
         s.commit()
@@ -68,7 +67,7 @@ def update_board(board_id: int, body: BoardUpdate):
 
 
 @router.delete("/{board_id}")
-def delete_board(board_id: int):
+def delete_board(board_id: int, acct: Account = Depends(get_current_account)):
     """Cascade-delete a board and everything that hangs off it.
 
     SQLite enforces FK constraints, so we have to clear children before
@@ -82,11 +81,8 @@ def delete_board(board_id: int):
     delete-project API through the flow_client we use).
     """
     with get_session() as s:
-        board = s.get(Board, board_id)
-        if not board:
-            raise HTTPException(404, "board not found")
+        board = owned_or_404(s, Board, board_id, acct.id)
 
-        # Children-of-children first.
         node_ids = [
             n.id for n in s.exec(select(Node).where(Node.board_id == board_id)).all()
         ]
@@ -101,7 +97,6 @@ def delete_board(board_id: int):
             s.exec(sql_delete(PipelineRun).where(PipelineRun.plan_id.in_(plan_ids)))
             s.exec(sql_delete(PlanRevision).where(PlanRevision.plan_id.in_(plan_ids)))
 
-        # Edge has FK on Node (source_id, target_id) — must clear before Node.
         s.exec(sql_delete(Edge).where(Edge.board_id == board_id))
         s.exec(sql_delete(Node).where(Node.board_id == board_id))
         s.exec(sql_delete(Plan).where(Plan.board_id == board_id))

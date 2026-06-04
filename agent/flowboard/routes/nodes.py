@@ -1,11 +1,13 @@
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
 from flowboard.db import get_session
-from flowboard.db.models import Asset, Board, Edge, Node, Request
+from flowboard.db.models import Account, Asset, Board, Edge, Node, Request
+from flowboard.db.scoping import owned_or_404
+from flowboard.deps import get_current_account
 from flowboard.short_id import generate_unique_short_id
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
@@ -50,13 +52,14 @@ class NodeUpdate(BaseModel):
 
 
 @router.post("")
-def create_node(body: NodeCreate):
+def create_node(body: NodeCreate, acct: Account = Depends(get_current_account)):
     with get_session() as s:
-        if not s.get(Board, body.board_id):
-            raise HTTPException(404, "board not found")
+        # Verify the board exists AND belongs to this account.
+        owned_or_404(s, Board, body.board_id, acct.id)
         short_id = generate_unique_short_id(s, body.board_id)
         node = Node(
             board_id=body.board_id,
+            account_id=acct.id,
             short_id=short_id,
             type=body.type,
             x=body.x,
@@ -73,7 +76,7 @@ def create_node(body: NodeCreate):
 
 
 @router.patch("/{node_id}")
-def update_node(node_id: int, body: NodeUpdate):
+def update_node(node_id: int, body: NodeUpdate, acct: Account = Depends(get_current_account)):
     """Partial update.
 
     The `data` field is **shallow-merged** into the existing JSON
@@ -103,6 +106,8 @@ def update_node(node_id: int, body: NodeUpdate):
         node = s.get(Node, node_id)
         if not node:
             raise HTTPException(404, "node not found")
+        # Verify account owns the board this node belongs to.
+        owned_or_404(s, Board, node.board_id, acct.id)
         patch = body.model_dump(exclude_unset=True)
         for k, v in patch.items():
             if k == "data" and isinstance(v, dict):
@@ -122,7 +127,7 @@ def update_node(node_id: int, body: NodeUpdate):
 
 
 @router.delete("/{node_id}")
-def delete_node(node_id: int):
+def delete_node(node_id: int, acct: Account = Depends(get_current_account)):
     """Delete a node + cascade.
 
     Edges are owned by the graph — delete them outright.
@@ -143,6 +148,8 @@ def delete_node(node_id: int):
         node = s.get(Node, node_id)
         if not node:
             raise HTTPException(404, "node not found")
+        # Verify account owns the board this node belongs to.
+        owned_or_404(s, Board, node.board_id, acct.id)
         # Detach historical children FIRST so the FK constraint is satisfied.
         orphan_requests = s.exec(
             select(Request).where(Request.node_id == node_id)

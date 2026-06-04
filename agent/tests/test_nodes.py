@@ -1,12 +1,13 @@
-def _make_board(client, name="Test"):
-    return client.post("/api/boards", json={"name": name}).json()
+def _make_board(client, auth, name="Test"):
+    return client.post("/api/boards", json={"name": name}, headers=auth).json()
 
 
-def test_create_node_assigns_short_id(client):
-    b = _make_board(client)
+def test_create_node_assigns_short_id(client, auth):
+    b = _make_board(client, auth)
     r = client.post(
         "/api/nodes",
         json={"board_id": b["id"], "type": "image", "x": 10, "y": 20},
+        headers=auth,
     )
     assert r.status_code == 200
     node = r.json()
@@ -17,25 +18,27 @@ def test_create_node_assigns_short_id(client):
     assert node["status"] == "idle"
 
 
-def test_short_ids_unique_within_board(client):
-    b = _make_board(client)
+def test_short_ids_unique_within_board(client, auth):
+    b = _make_board(client, auth)
     ids = set()
     for _ in range(50):
         n = client.post(
-            "/api/nodes", json={"board_id": b["id"], "type": "note"}
+            "/api/nodes", json={"board_id": b["id"], "type": "note"}, headers=auth
         ).json()
         assert n["short_id"] not in ids
         ids.add(n["short_id"])
 
 
-def test_patch_node_partial(client):
-    b = _make_board(client)
+def test_patch_node_partial(client, auth):
+    b = _make_board(client, auth)
     n = client.post(
         "/api/nodes",
         json={"board_id": b["id"], "type": "image", "x": 0, "y": 0},
+        headers=auth,
     ).json()
 
-    r = client.patch(f"/api/nodes/{n['id']}", json={"x": 123.5, "status": "running"})
+    r = client.patch(f"/api/nodes/{n['id']}", json={"x": 123.5, "status": "running"},
+                     headers=auth)
     assert r.status_code == 200
     out = r.json()
     assert out["x"] == 123.5
@@ -43,8 +46,8 @@ def test_patch_node_partial(client):
     assert out["y"] == 0  # unchanged
 
 
-def test_patch_missing_node_returns_404(client):
-    r = client.patch("/api/nodes/999", json={"x": 1})
+def test_patch_missing_node_returns_404(client, auth):
+    r = client.patch("/api/nodes/999", json={"x": 1}, headers=auth)
     assert r.status_code == 404
 
 
@@ -62,8 +65,8 @@ def test_patch_missing_node_returns_404(client):
 # and missing keys preserve existing values verbatim.
 
 
-def _make_image_node(client) -> dict:
-    b = _make_board(client)
+def _make_image_node(client, auth) -> dict:
+    b = _make_board(client, auth)
     return client.post(
         "/api/nodes",
         json={
@@ -78,18 +81,20 @@ def _make_image_node(client) -> dict:
                 "variantCount": 4,
             },
         },
+        headers=auth,
     ).json()
 
 
-def test_patch_data_merge_preserves_untouched_fields(client):
+def test_patch_data_merge_preserves_untouched_fields(client, auth):
     """Patching `data` with a subset of keys MUST keep every other key
     intact. This was the root cause of the aspectRatio data-loss bug."""
-    n = _make_image_node(client)
+    n = _make_image_node(client, auth)
 
     # Simulate auto-brief style update — only aiBrief is in the patch.
     r = client.patch(
         f"/api/nodes/{n['id']}",
         json={"data": {"aiBrief": "updated brief from vision"}},
+        headers=auth,
     )
     assert r.status_code == 200
     data = r.json()["data"]
@@ -104,15 +109,16 @@ def test_patch_data_merge_preserves_untouched_fields(client):
     assert data["variantCount"] == 4
 
 
-def test_patch_data_null_deletes_key(client):
+def test_patch_data_null_deletes_key(client, auth):
     """Sending `null` is the explicit "clear this field" sentinel —
     e.g. gen-done passes `{aiBrief: null}` to invalidate stale
     descriptions before vision re-runs. Any other field stays put."""
-    n = _make_image_node(client)
+    n = _make_image_node(client, auth)
 
     r = client.patch(
         f"/api/nodes/{n['id']}",
         json={"data": {"aiBrief": None}},
+        headers=auth,
     )
     assert r.status_code == 200
     data = r.json()["data"]
@@ -123,14 +129,15 @@ def test_patch_data_null_deletes_key(client):
     assert data["mediaId"] == "abc"
 
 
-def test_patch_data_overrides_existing_value(client):
+def test_patch_data_overrides_existing_value(client, auth):
     """A non-null value for an existing key replaces it — merge isn't
     "ignore conflicts", it's "shallow object spread"."""
-    n = _make_image_node(client)
+    n = _make_image_node(client, auth)
 
     r = client.patch(
         f"/api/nodes/{n['id']}",
         json={"data": {"prompt": "rewritten prompt", "variantCount": 1}},
+        headers=auth,
     )
     assert r.status_code == 200
     data = r.json()["data"]
@@ -141,14 +148,15 @@ def test_patch_data_overrides_existing_value(client):
     assert data["aspectRatio"] == "IMAGE_ASPECT_RATIO_PORTRAIT"
 
 
-def test_patch_data_adds_new_key_without_touching_others(client):
+def test_patch_data_adds_new_key_without_touching_others(client, auth):
     """Adding a new key (e.g. mediaIds after first gen) must not
     require listing every legacy key — that was the bug pattern."""
-    n = _make_image_node(client)
+    n = _make_image_node(client, auth)
 
     r = client.patch(
         f"/api/nodes/{n['id']}",
         json={"data": {"mediaIds": ["a", "b", "c"]}},
+        headers=auth,
     )
     assert r.status_code == 200
     data = r.json()["data"]
@@ -158,13 +166,13 @@ def test_patch_data_adds_new_key_without_touching_others(client):
     assert data["aiBrief"] == "young woman in cream blouse"
 
 
-def test_patch_data_chain_of_partial_updates_keeps_invariants(client):
+def test_patch_data_chain_of_partial_updates_keeps_invariants(client, auth):
     """Reproduce the actual sequence that lost aspectRatio in
     production: gen-done sets aspectRatio + clears aiBrief, then vision
     callback sets a fresh aiBrief moments later. After both, every
     field set by either step must still be present — neither call can
     erase the other's contribution."""
-    n = _make_image_node(client)
+    n = _make_image_node(client, auth)
 
     # Step 1 — gen-done: persist generation result, clear stale brief.
     client.patch(
@@ -178,12 +186,14 @@ def test_patch_data_chain_of_partial_updates_keeps_invariants(client):
                 "aiBrief": None,
             },
         },
+        headers=auth,
     )
 
     # Step 2 — vision callback: sets fresh aiBrief, lists nothing else.
     r = client.patch(
         f"/api/nodes/{n['id']}",
         json={"data": {"aiBrief": "describes the new image"}},
+        headers=auth,
     )
     assert r.status_code == 200
     data = r.json()["data"]
@@ -199,13 +209,13 @@ def test_patch_data_chain_of_partial_updates_keeps_invariants(client):
     assert data["prompt"] == "studio shot"
 
 
-def test_patch_data_empty_dict_is_a_noop(client):
+def test_patch_data_empty_dict_is_a_noop(client, auth):
     """An empty `data: {}` patch must not erase the column — pydantic
     sees the key as set, but there's nothing to merge so the existing
     payload survives intact."""
-    n = _make_image_node(client)
+    n = _make_image_node(client, auth)
 
-    r = client.patch(f"/api/nodes/{n['id']}", json={"data": {}})
+    r = client.patch(f"/api/nodes/{n['id']}", json={"data": {}}, headers=auth)
     assert r.status_code == 200
     data = r.json()["data"]
     assert data["title"] == "Hero"
@@ -214,15 +224,16 @@ def test_patch_data_empty_dict_is_a_noop(client):
     assert data["mediaId"] == "abc"
 
 
-def test_patch_non_data_fields_still_replace(client):
+def test_patch_non_data_fields_still_replace(client, auth):
     """Merge semantic only applies to `data` — scalar columns like
     `x`, `status` keep the simple setattr semantic so e.g. moving a
     node doesn't accidentally try to merge coordinates."""
-    n = _make_image_node(client)
+    n = _make_image_node(client, auth)
 
     r = client.patch(
         f"/api/nodes/{n['id']}",
         json={"x": 999.0, "y": -123.0, "status": "running"},
+        headers=auth,
     )
     assert r.status_code == 200
     out = r.json()
@@ -234,21 +245,24 @@ def test_patch_non_data_fields_still_replace(client):
     assert out["data"]["aspectRatio"] == "IMAGE_ASPECT_RATIO_PORTRAIT"
 
 
-def test_delete_node_cascades_edges(client):
-    b = _make_board(client)
-    a = client.post("/api/nodes", json={"board_id": b["id"], "type": "image"}).json()
-    c = client.post("/api/nodes", json={"board_id": b["id"], "type": "image"}).json()
+def test_delete_node_cascades_edges(client, auth):
+    b = _make_board(client, auth)
+    a = client.post("/api/nodes", json={"board_id": b["id"], "type": "image"},
+                    headers=auth).json()
+    c = client.post("/api/nodes", json={"board_id": b["id"], "type": "image"},
+                    headers=auth).json()
     e = client.post(
         "/api/edges",
         json={"board_id": b["id"], "source_id": a["id"], "target_id": c["id"]},
+        headers=auth,
     ).json()
 
-    r = client.delete(f"/api/nodes/{a['id']}")
+    r = client.delete(f"/api/nodes/{a['id']}", headers=auth)
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
     assert e["id"] in body["deleted_edges"]
 
     # edge is gone server-side
-    detail = client.get(f"/api/boards/{b['id']}").json()
+    detail = client.get(f"/api/boards/{b['id']}", headers=auth).json()
     assert detail["edges"] == []

@@ -508,11 +508,12 @@ def test_edit_image_uses_base_image_input_type():
 # ── visual_asset node type ────────────────────────────────────────────────
 
 
-def test_create_visual_asset_node(client):
-    b = client.post("/api/boards", json={"name": "vt"}).json()
+def test_create_visual_asset_node(client, auth):
+    b = client.post("/api/boards", json={"name": "vt"}, headers=auth).json()
     r = client.post(
         "/api/nodes",
         json={"board_id": b["id"], "type": "visual_asset", "data": {"title": "Hero"}},
+        headers=auth,
     )
     assert r.status_code == 200, r.text
     n = r.json()

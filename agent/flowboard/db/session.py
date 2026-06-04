@@ -3,20 +3,22 @@ from contextlib import contextmanager
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine
 
-from flowboard.config import DB_PATH
+from flowboard.config import DATABASE_URL
 
+_is_sqlite = DATABASE_URL.startswith("sqlite")
 engine = create_engine(
-    f"sqlite:///{DB_PATH}",
+    DATABASE_URL,
     echo=False,
-    connect_args={"check_same_thread": False},
+    connect_args={"check_same_thread": False} if _is_sqlite else {},
 )
 
 
-@event.listens_for(engine, "connect")
-def _enable_sqlite_fk(dbapi_conn, _connection_record) -> None:
-    cur = dbapi_conn.cursor()
-    cur.execute("PRAGMA foreign_keys=ON")
-    cur.close()
+if _is_sqlite:
+    @event.listens_for(engine, "connect")
+    def _enable_sqlite_fk(dbapi_conn, _connection_record) -> None:
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
 
 
 def init_db() -> None:

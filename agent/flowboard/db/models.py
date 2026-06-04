@@ -9,15 +9,51 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class Account(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    email: str = Field(index=True, unique=True)
+    password_hash: str
+    created_at: datetime = Field(default_factory=_utcnow)
+    llm_provider: Optional[str] = None  # "claude" | "gemini" | "codex"
+    llm_api_key_enc: Optional[bytes] = None  # Fernet-encrypted ciphertext
+    google_email: Optional[str] = None
+    google_name: Optional[str] = None
+    google_picture: Optional[str] = None
+
+
+class RefreshToken(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    account_id: int = Field(foreign_key="account.id", index=True)
+    token_hash: str = Field(index=True)
+    expires_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class DeviceToken(SQLModel, table=True):
+    """Token the Chrome extension presents to open its authenticated WS.
+    Minted by the pairing endpoint; revocable on logout."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    account_id: int = Field(foreign_key="account.id", index=True)
+    token_hash: str = Field(index=True)
+    label: str = ""
+    expires_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 class Board(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
+    account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True)
     created_at: datetime = Field(default_factory=_utcnow)
 
 
 class Node(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     board_id: int = Field(foreign_key="board.id", index=True)
+    account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True)
     short_id: str = Field(index=True)
     type: str
     x: float = 0.0
@@ -52,6 +88,7 @@ class Edge(SQLModel, table=True):
 class Request(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     node_id: Optional[int] = Field(default=None, foreign_key="node.id", index=True)
+    account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True)
     type: str
     params: dict = Field(default_factory=dict, sa_column=Column(JSON))
     status: str = "queued"
@@ -66,6 +103,7 @@ class Asset(SQLModel, table=True):
     # node_id is optional — assets can arrive from TRPC before any node
     # binding (e.g. the user browses an old Flow project).
     node_id: Optional[int] = Field(default=None, foreign_key="node.id", index=True)
+    account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True)
     kind: str  # image | video | thumbnail
     # Media id (the hex uuid from Google Flow). Unique so ingest can upsert.
     uuid_media_id: Optional[str] = Field(default=None, index=True, unique=True)

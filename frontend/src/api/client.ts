@@ -1,11 +1,15 @@
+let _authToken: string | null = null;
+export function setAuthToken(token: string | null) { _authToken = token; }
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(init?.headers as Record<string, string> ?? {}),
+  };
+  if (_authToken && !headers["Authorization"]) {
+    headers["Authorization"] = `Bearer ${_authToken}`;
+  }
+  const res = await fetch(path, { ...init, headers });
   if (!res.ok) {
     throw new Error(`${res.status} ${res.statusText}`);
   }
@@ -929,4 +933,54 @@ export function getFlowSyncStatus(): Promise<SyncStatusResponse> {
 
 export function syncBoardsUpToFlow(): Promise<SyncUpResponse> {
   return api<SyncUpResponse>("/api/flow/projects/sync-up", { method: "POST" });
+}
+
+// ── Account auth (multi-tenant) ──────────────────────────────────────────────
+
+export interface AccountMe {
+  id: number;
+  email: string;
+  llm_provider: string | null;
+  google_email: string | null;
+  google_name: string | null;
+  google_picture: string | null;
+}
+
+export async function accountRegister(email: string, password: string): Promise<{ id: number; email: string }> {
+  const res = await fetch("/api/account/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res));
+  return res.json();
+}
+
+export async function accountLogin(email: string, password: string): Promise<{ access_token: string; token_type: string }> {
+  const res = await fetch("/api/account/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res));
+  return res.json();
+}
+
+export async function accountRefresh(): Promise<{ access_token: string; token_type: string } | null> {
+  const res = await fetch("/api/account/refresh", { method: "POST", credentials: "include" });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function accountLogout(): Promise<void> {
+  await fetch("/api/account/logout", { method: "POST", credentials: "include" });
+}
+
+export async function accountMe(token: string): Promise<AccountMe> {
+  const res = await fetch("/api/account/me", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res));
+  return res.json();
 }

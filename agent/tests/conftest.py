@@ -49,3 +49,13 @@ def _seed_default_paygate_tier():
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+@pytest.fixture
+def auth(client):
+    client.post("/api/account/register",
+                json={"email": "fixture@example.com", "password": "pw123456"})
+    tok = client.post("/api/account/login",
+                      json={"email": "fixture@example.com", "password": "pw123456"}
+                      ).json()["access_token"]
+    return {"Authorization": f"Bearer {tok}"}

@@ -77,8 +77,8 @@ def test_extract_plan_bare_json_without_fence():
 # ── Real planner dispatcher ────────────────────────────────────────────────
 
 
-def _board(client, name="T"):
-    return client.post("/api/boards", json={"name": name}).json()
+def _board(client, auth, name="T"):
+    return client.post("/api/boards", json={"name": name}, headers=auth).json()
 
 
 def _claude_provider():
@@ -88,11 +88,11 @@ def _claude_provider():
 
 
 @pytest.mark.asyncio
-async def test_generate_plan_reply_uses_provider_when_available(client):
+async def test_generate_plan_reply_uses_provider_when_available(client, auth):
     """Backend=cli: skip the auto-mode availability check, dispatch
     directly. Provider returns a fenced JSON block, planner extracts the
     plan + conversational text."""
-    b = _board(client)
+    b = _board(client, auth)
     provider_response = (
         "Creating three variations.\n"
         "```json\n"
@@ -116,10 +116,10 @@ async def test_generate_plan_reply_uses_provider_when_available(client):
 
 
 @pytest.mark.asyncio
-async def test_generate_plan_reply_falls_back_to_mock_when_provider_unavailable(client):
+async def test_generate_plan_reply_falls_back_to_mock_when_provider_unavailable(client, auth):
     """Backend=auto + configured provider not available → short-circuit
     before building prompt context and return mock reply."""
-    b = _board(client)
+    b = _board(client, auth)
     with patch("flowboard.services.planner.PLANNER_BACKEND", "auto"), \
          patch.object(_claude_provider(), "is_available", return_value=False):
         from flowboard.db import get_session
@@ -133,11 +133,11 @@ async def test_generate_plan_reply_falls_back_to_mock_when_provider_unavailable(
 
 
 @pytest.mark.asyncio
-async def test_generate_plan_reply_handles_provider_error_with_mock_fallback(client):
+async def test_generate_plan_reply_handles_provider_error_with_mock_fallback(client, auth):
     """Backend=auto + provider available + run_llm raises → fall back to
     mock (auto mode swallows the error). Confirms the registry's `LLMError`
     contract is what the migrated planner catches now."""
-    b = _board(client)
+    b = _board(client, auth)
     with patch("flowboard.services.planner.PLANNER_BACKEND", "auto"), \
          patch.object(_claude_provider(), "is_available", return_value=True), \
          patch(
@@ -156,11 +156,11 @@ async def test_generate_plan_reply_handles_provider_error_with_mock_fallback(cli
 
 
 @pytest.mark.asyncio
-async def test_generate_plan_reply_cli_mode_surfaces_error_text(client):
+async def test_generate_plan_reply_cli_mode_surfaces_error_text(client, auth):
     """Backend=cli + run_llm raises → reply_text shows the error verbatim
     (NOT a silent mock fallback). cli mode is "I want the LLM, tell me when
     it's broken" — so the user knows their config needs attention."""
-    b = _board(client)
+    b = _board(client, auth)
     with patch("flowboard.services.planner.PLANNER_BACKEND", "cli"), \
          patch(
              "flowboard.services.planner.run_llm",
@@ -178,12 +178,12 @@ async def test_generate_plan_reply_cli_mode_surfaces_error_text(client):
 
 
 @pytest.mark.asyncio
-async def test_generate_plan_reply_mock_mode_skips_provider_entirely(client):
+async def test_generate_plan_reply_mock_mode_skips_provider_entirely(client, auth):
     """Backend=mock: every other code path — provider lookup, is_available
     probe, run_llm dispatch — must be skipped. Asserts each mock was
     untouched so a regression that accidentally calls the LLM in mock
     mode (e.g. costing tokens in CI) gets caught."""
-    b = _board(client)
+    b = _board(client, auth)
     is_available_mock = AsyncMock(return_value=True)
     run_llm_mock = AsyncMock(return_value="should not be called")
     with patch("flowboard.services.planner.PLANNER_BACKEND", "mock"), \
@@ -203,7 +203,7 @@ async def test_generate_plan_reply_mock_mode_skips_provider_entirely(client):
 
 @pytest.mark.asyncio
 async def test_generate_plan_reply_auto_respects_user_picked_provider(
-    client, tmp_path, monkeypatch
+    client, auth, tmp_path, monkeypatch
 ):
     """User pinned planner=gemini in Settings — auto mode probes Gemini's
     availability (not Claude's). Gemini unavailable → mock fallback even
@@ -213,7 +213,7 @@ async def test_generate_plan_reply_auto_respects_user_picked_provider(
     Isolated secrets path so we don't write to the user's
     ~/.flowboard/secrets.json from a test."""
     monkeypatch.setenv("FLOWBOARD_SECRETS_PATH", str(tmp_path / "secrets.json"))
-    b = _board(client)
+    b = _board(client, auth)
     from flowboard.services.llm import secrets
     secrets.set_feature_provider("planner", "gemini")
     gemini = registry.get_provider("gemini")

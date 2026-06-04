@@ -1,12 +1,12 @@
-def _scaffold(client):
-    b = client.post("/api/boards", json={"name": "T"}).json()
-    a = client.post("/api/nodes", json={"board_id": b["id"], "type": "character"}).json()
-    c = client.post("/api/nodes", json={"board_id": b["id"], "type": "image"}).json()
+def _scaffold(client, auth):
+    b = client.post("/api/boards", json={"name": "T"}, headers=auth).json()
+    a = client.post("/api/nodes", json={"board_id": b["id"], "type": "character"}, headers=auth).json()
+    c = client.post("/api/nodes", json={"board_id": b["id"], "type": "image"}, headers=auth).json()
     return b, a, c
 
 
-def test_create_and_delete_edge(client):
-    b, a, c = _scaffold(client)
+def test_create_and_delete_edge(client, auth):
+    b, a, c = _scaffold(client, auth)
     r = client.post(
         "/api/edges",
         json={"board_id": b["id"], "source_id": a["id"], "target_id": c["id"]},
@@ -20,20 +20,20 @@ def test_create_and_delete_edge(client):
     # multi-variant where the user hasn't picked).
     assert edge["source_variant_idx"] is None
 
-    detail = client.get(f"/api/boards/{b['id']}").json()
+    detail = client.get(f"/api/boards/{b['id']}", headers=auth).json()
     assert len(detail["edges"]) == 1
 
     r = client.delete(f"/api/edges/{edge['id']}")
     assert r.status_code == 200
-    detail = client.get(f"/api/boards/{b['id']}").json()
+    detail = client.get(f"/api/boards/{b['id']}", headers=auth).json()
     assert detail["edges"] == []
 
 
-def test_create_edge_with_variant_pin(client):
+def test_create_edge_with_variant_pin(client, auth):
     """The frontend can pre-pin a variant when drawing the edge — used by
     the variant-click flow (Stage 2) so the new edge already binds the
     user's chosen variant."""
-    b, a, c = _scaffold(client)
+    b, a, c = _scaffold(client, auth)
     r = client.post(
         "/api/edges",
         json={
@@ -45,10 +45,10 @@ def test_create_edge_with_variant_pin(client):
     assert r.json()["source_variant_idx"] == 2
 
 
-def test_patch_edge_variant_pin(client):
+def test_patch_edge_variant_pin(client, auth):
     """PATCH updates the variant pin in place. Setting an int pins;
     explicit null clears the pin (revert to source.mediaId)."""
-    b, a, c = _scaffold(client)
+    b, a, c = _scaffold(client, auth)
     edge = client.post(
         "/api/edges",
         json={"board_id": b["id"], "source_id": a["id"], "target_id": c["id"]},
@@ -59,7 +59,7 @@ def test_patch_edge_variant_pin(client):
     assert r.json()["source_variant_idx"] == 3
 
     # Round-trip via GET to confirm persistence.
-    detail = client.get(f"/api/boards/{b['id']}").json()
+    detail = client.get(f"/api/boards/{b['id']}", headers=auth).json()
     assert detail["edges"][0]["source_variant_idx"] == 3
 
     # Explicit null clears the pin.
@@ -68,10 +68,10 @@ def test_patch_edge_variant_pin(client):
     assert r.json()["source_variant_idx"] is None
 
 
-def test_patch_edge_empty_body_leaves_pin_untouched(client):
+def test_patch_edge_empty_body_leaves_pin_untouched(client, auth):
     """An empty PATCH body must NOT silently clear the pin — Pydantic's
     `model_fields_set` check distinguishes "unset" from "explicit null"."""
-    b, a, c = _scaffold(client)
+    b, a, c = _scaffold(client, auth)
     edge = client.post(
         "/api/edges",
         json={
@@ -89,8 +89,8 @@ def test_patch_unknown_edge_returns_404(client):
     assert r.status_code == 404
 
 
-def test_edge_self_loop_rejected(client):
-    b, a, _ = _scaffold(client)
+def test_edge_self_loop_rejected(client, auth):
+    b, a, _ = _scaffold(client, auth)
     r = client.post(
         "/api/edges",
         json={"board_id": b["id"], "source_id": a["id"], "target_id": a["id"]},
@@ -98,11 +98,11 @@ def test_edge_self_loop_rejected(client):
     assert r.status_code == 400
 
 
-def test_edge_crossing_board_rejected(client):
-    b1, a, _ = _scaffold(client)
-    b2 = client.post("/api/boards", json={"name": "other"}).json()
+def test_edge_crossing_board_rejected(client, auth):
+    b1, a, _ = _scaffold(client, auth)
+    b2 = client.post("/api/boards", json={"name": "other"}, headers=auth).json()
     other = client.post(
-        "/api/nodes", json={"board_id": b2["id"], "type": "image"}
+        "/api/nodes", json={"board_id": b2["id"], "type": "image"}, headers=auth
     ).json()
 
     r = client.post(
@@ -112,9 +112,9 @@ def test_edge_crossing_board_rejected(client):
     assert r.status_code == 400
 
 
-def test_edge_missing_node_returns_404(client):
-    b = client.post("/api/boards", json={"name": "T"}).json()
-    a = client.post("/api/nodes", json={"board_id": b["id"], "type": "image"}).json()
+def test_edge_missing_node_returns_404(client, auth):
+    b = client.post("/api/boards", json={"name": "T"}, headers=auth).json()
+    a = client.post("/api/nodes", json={"board_id": b["id"], "type": "image"}, headers=auth).json()
     r = client.post(
         "/api/edges",
         json={"board_id": b["id"], "source_id": a["id"], "target_id": 999},

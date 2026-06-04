@@ -6,13 +6,13 @@ import pytest
 from flowboard.worker.processor import WorkerController
 
 
-def _board(client, name="T"):
-    return client.post("/api/boards", json={"name": name}).json()
+def _board(client, auth, name="T"):
+    return client.post("/api/boards", json={"name": name}, headers=auth).json()
 
 
-def test_create_request_persists_and_returns_row(client):
-    b = _board(client)
-    n = client.post("/api/nodes", json={"board_id": b["id"], "type": "image"}).json()
+def test_create_request_persists_and_returns_row(client, auth):
+    b = _board(client, auth)
+    n = client.post("/api/nodes", json={"board_id": b["id"], "type": "image"}, headers=auth).json()
 
     r = client.post(
         "/api/requests",
@@ -380,9 +380,6 @@ async def test_worker_gen_video_times_out(client, monkeypatch):
             current = client.get(f"/api/requests/{row['id']}").json()
             if current["status"] not in ("queued", "running"):
                 break
-        # Polling exhaustion now lands on the dedicated 'timeout' status
-        # (was 'failed' before the auto-TIMEOUT change). Error string
-        # stays the same so the detail viewer still surfaces the cause.
         assert current["status"] == "timeout"
         assert current["error"] == "timeout_waiting_video"
     finally:
@@ -446,7 +443,6 @@ async def test_worker_gen_video_bails_on_per_op_error(client, monkeypatch):
                 break
         assert current["status"] == "failed", current
         assert current["error"] == "PUBLIC_ERROR_AUDIO_FILTERED"
-        # Bail-out must happen on the very first poll, not after polling 50×.
         assert poll_count["n"] == 1
     finally:
         w.request_shutdown()
@@ -457,12 +453,6 @@ async def test_worker_gen_video_bails_on_per_op_error(client, monkeypatch):
 async def test_worker_gen_video_partial_batch_keeps_succeeded(
     client, monkeypatch,
 ):
-    """Real-world repro: a 4-variant i2v batch where Veo blocks 1 clip
-    with PUBLIC_ERROR_UNSAFE_GENERATION and the other 3 succeed. The
-    request as a whole must finish `done` so the user keeps the 3
-    rendered videos; the failed slot is preserved as a positional
-    `None` in `media_ids` and the per-op error is summarised in
-    `partial_error` so the UI can flag which variant got filtered."""
     from flowboard.worker import processor as proc
 
     monkeypatch.setattr(proc, "VIDEO_POLL_INTERVAL_S", 0.01)
@@ -470,8 +460,6 @@ async def test_worker_gen_video_partial_batch_keeps_succeeded(
 
     class _StubSdk:
         async def gen_video(self, **kwargs):
-            # Order matters — the worker preserves dispatch order in
-            # `media_ids` so slot 1 (the second op) is the failure.
             return {
                 "raw": {},
                 "operation_names": ["op-a", "op-b-bad", "op-c", "op-d"],
@@ -546,22 +534,14 @@ async def test_worker_gen_video_partial_batch_keeps_succeeded(
             current = client.get(f"/api/requests/{row['id']}").json()
             if current["status"] not in ("queued", "running"):
                 break
-        # Whole request must succeed — losing 1 clip out of 4 doesn't
-        # invalidate the other 3.
         assert current["status"] == "done", current
-        # Top-level error stays None — the partial info is in result.
         assert current.get("error") in (None, "")
-        # Positional alignment: slot 1 (the blocked variant) is None.
         assert current["result"]["media_ids"] == [
             "vid-a", None, "vid-c", "vid-d",
         ]
-        # Per-op error map names exactly the failed op.
         assert current["result"]["op_errors"] == {
             "op-b-bad": "PUBLIC_ERROR_UNSAFE_GENERATION",
         }
-        # `slot_errors` mirrors `media_ids` indexing — None for the
-        # succeeded slots, the error code for the blocked slot. Lets
-        # the viewer render the exact filter reason per-tile.
         assert current["result"]["slot_errors"] == [
             None, "PUBLIC_ERROR_UNSAFE_GENERATION", None, None,
         ]
@@ -577,10 +557,6 @@ async def test_worker_gen_video_partial_batch_keeps_succeeded(
 async def test_worker_gen_video_dedupes_repeat_entries_across_polls(
     client, monkeypatch,
 ):
-    """Ops that finish early get re-listed as `done` on every subsequent
-    poll. The worker must collect each op's media_entries ONLY on the
-    transition; otherwise media_ids accumulates duplicates and the node
-    UI shows extra phantom variants (saw 7 chips on a 4-variant gen)."""
     from flowboard.worker import processor as proc
 
     monkeypatch.setattr(proc, "VIDEO_POLL_INTERVAL_S", 0.01)
@@ -595,12 +571,9 @@ async def test_worker_gen_video_dedupes_repeat_entries_across_polls(
         async def check_async(self, names, workflows=None):
             poll_state["n"] += 1
             n = poll_state["n"]
-            # Each op finishes on a different poll; once done it stays
-            # `done=True` in subsequent polls (Flow behaviour). Worker
-            # must not re-collect.
             ops = []
             for i, name in enumerate(["op-1", "op-2", "op-3"], start=1):
-                done = i <= n  # op 1 done at poll 1, op 2 at 2, etc.
+                done = i <= n
                 entries = (
                     [{"media_id": f"vid-{i}", "url": f"https://flow-content.google/video/vid-{i}", "mediaType": "video"}]
                     if done
@@ -639,7 +612,6 @@ async def test_worker_gen_video_dedupes_repeat_entries_across_polls(
                 break
         assert current["status"] == "done", current
         media_ids = current["result"]["media_ids"]
-        # Exactly 3 unique videos — no duplicates from polls 2 and 3.
         assert media_ids == ["vid-1", "vid-2", "vid-3"], media_ids
         assert len(media_ids) == len(set(media_ids))
     finally:
@@ -651,9 +623,6 @@ async def test_worker_gen_video_dedupes_repeat_entries_across_polls(
 async def test_cancel_running_video_bails_poll_and_keeps_canceled_status(
     client, monkeypatch,
 ):
-    """While a gen_video poll is in flight the user hits Cancel. The
-    poll loop must read the new 'canceled' status on its next tick and
-    bail out without overwriting the row back to 'failed' or 'done'."""
     from flowboard.worker import processor as proc
 
     monkeypatch.setattr(proc, "VIDEO_POLL_INTERVAL_S", 0.05)
@@ -692,19 +661,15 @@ async def test_cancel_running_video_bails_poll_and_keeps_canceled_status(
     task = asyncio.create_task(w.start())
     try:
         w.enqueue(row["id"])
-        # Wait for the worker to flip the row to running.
         for _ in range(50):
             await asyncio.sleep(0.02)
             current = client.get(f"/api/requests/{row['id']}").json()
             if current["status"] == "running":
                 break
         assert current["status"] == "running", current
-        # Cancel the in-flight job — endpoint must accept it.
         cancel_resp = client.post(f"/api/requests/{row['id']}/cancel")
         assert cancel_resp.status_code == 200
         assert cancel_resp.json()["status"] == "canceled"
-        # Worker handler should observe cancel on its next poll tick
-        # and exit; final status remains 'canceled'.
         for _ in range(200):
             await asyncio.sleep(0.02)
             current = client.get(f"/api/requests/{row['id']}").json()
@@ -791,16 +756,12 @@ async def test_worker_gen_image_rejects_missing_prompt(client):
 
 
 def test_recover_orphan_running_requests_marks_them_failed(client):
-    """An agent restart while a long-running gen_video poll is mid-flight leaves
-    the request in 'running' forever. The startup recovery hook should sweep
-    those rows to 'failed' so the frontend stops polling indefinitely."""
     from datetime import datetime, timezone
 
     from flowboard.db import get_session
     from flowboard.db.models import Request
     from flowboard.main import _recover_orphan_running_requests
 
-    # Two stuck running rows + one already-failed (untouched control).
     with get_session() as s:
         s.add(Request(
             type="gen_video",
@@ -837,7 +798,6 @@ def test_recover_orphan_running_requests_marks_them_failed(client):
         ("gen_video", "failed", "agent_restart_lost"),
     ]
 
-    # Idempotent — second call should touch nothing.
     assert _recover_orphan_running_requests() == 0
 
 
@@ -846,16 +806,11 @@ def test_recover_orphan_running_requests_marks_them_failed(client):
 
 @pytest.mark.asyncio
 async def test_worker_gen_video_omni_happy_path(client, monkeypatch):
-    """Omni Flash dispatches to gen_video_omni with the cURL-confirmed
-    body shape: referenceImages[] + duration-keyed model + V2 config."""
     from flowboard.worker import processor as proc
     from flowboard.services import media_project_sync as sync_mod
 
     monkeypatch.setattr(proc, "VIDEO_POLL_INTERVAL_S", 0.05)
 
-    # Bypass the cross-project re-upload — the test fixture has no
-    # real cached bytes for "ref-aaa". Pin the identity passthrough so
-    # the dispatch path still receives the original mediaIds.
     async def _stub_sync(ids, project_id):
         return list(ids), []
     monkeypatch.setattr(sync_mod, "ensure_media_ids_in_project", _stub_sync)
@@ -923,7 +878,6 @@ async def test_worker_gen_video_omni_happy_path(client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_worker_gen_video_omni_rejects_invalid_duration(client, monkeypatch):
-    """Duration must be one of {4,6,8,10}. 5s / 7s / 12s reject hard."""
     from flowboard.worker import processor as proc
 
     class _StubSdk:
@@ -963,8 +917,6 @@ async def test_worker_gen_video_omni_requires_refs(client, monkeypatch):
 
 
 def test_omni_flash_credit_cost_table():
-    """The credit table is informational only (frontend reads it) — pin
-    the contract so a Pro user doesn't get surprised by a silent rebase."""
     from flowboard.services.flow_sdk import OMNI_FLASH_CREDIT_COST
 
     assert OMNI_FLASH_CREDIT_COST == {4: 15, 6: 20, 8: 25, 10: 30}

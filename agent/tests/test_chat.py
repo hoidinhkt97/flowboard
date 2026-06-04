@@ -1,12 +1,12 @@
 from unittest.mock import AsyncMock, patch
 
 
-def _board(client, name="T"):
-    return client.post("/api/boards", json={"name": name}).json()
+def _board(client, auth, name="T"):
+    return client.post("/api/boards", json={"name": name}, headers=auth).json()
 
 
-def test_send_chat_persists_user_and_assistant(client):
-    b = _board(client)
+def test_send_chat_persists_user_and_assistant(client, auth):
+    b = _board(client, auth)
     r = client.post(
         "/api/chat",
         json={"board_id": b["id"], "message": "hello", "mentions": []},
@@ -20,11 +20,12 @@ def test_send_chat_persists_user_and_assistant(client):
     assert body["assistant"]["board_id"] == b["id"]
 
 
-def test_chat_mentions_referenced_in_reply(client):
-    b = _board(client)
+def test_chat_mentions_referenced_in_reply(client, auth):
+    b = _board(client, auth)
     node = client.post(
         "/api/nodes",
         json={"board_id": b["id"], "type": "character", "data": {"title": "Lira"}},
+        headers=auth,
     ).json()
     short = node["short_id"]
 
@@ -43,8 +44,8 @@ def test_chat_mentions_referenced_in_reply(client):
     assert "Lira" in body["assistant"]["content"]
 
 
-def test_chat_unknown_mention_noted(client):
-    b = _board(client)
+def test_chat_unknown_mention_noted(client, auth):
+    b = _board(client, auth)
     r = client.post(
         "/api/chat",
         json={"board_id": b["id"], "message": "what", "mentions": ["zzzz"]},
@@ -53,8 +54,8 @@ def test_chat_unknown_mention_noted(client):
     assert "zzzz" in r.json()["assistant"]["content"]
 
 
-def test_list_chat_returns_history_ordered(client):
-    b = _board(client)
+def test_list_chat_returns_history_ordered(client, auth):
+    b = _board(client, auth)
     for i in range(3):
         client.post(
             "/api/chat",
@@ -70,8 +71,8 @@ def test_list_chat_returns_history_ordered(client):
     assert user_contents == ["msg0", "msg1", "msg2"]
 
 
-def test_send_chat_rejects_empty_message(client):
-    b = _board(client)
+def test_send_chat_rejects_empty_message(client, auth):
+    b = _board(client, auth)
     r = client.post(
         "/api/chat",
         json={"board_id": b["id"], "message": "", "mentions": []},
@@ -95,8 +96,8 @@ def test_list_chat_unknown_board(client):
 # ── plan persistence + response shape ─────────────────────────────────────
 
 
-def test_send_chat_returns_plan_when_planner_emits_one(client):
-    b = _board(client)
+def test_send_chat_returns_plan_when_planner_emits_one(client, auth):
+    b = _board(client, auth)
     planned = {
         "reply_text": "Making a plan.",
         "plan": {
@@ -122,8 +123,8 @@ def test_send_chat_returns_plan_when_planner_emits_one(client):
     assert body["plan"]["status"] == "draft"
 
 
-def test_send_chat_omits_plan_when_planner_returns_none(client):
-    b = _board(client)
+def test_send_chat_omits_plan_when_planner_returns_none(client, auth):
+    b = _board(client, auth)
     planned = {"reply_text": "Just chatting.", "plan": None}
     with patch(
         "flowboard.routes.chat.generate_plan_reply",
