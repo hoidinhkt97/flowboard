@@ -1,29 +1,36 @@
-"""Tests for the /api/auth/me identity surface and the WS user_info
-inbound message handler in flow_client."""
+"""Tests for /api/auth/* routes and the WS user_info inbound message handler."""
 from __future__ import annotations
 
 import pytest
+from unittest.mock import MagicMock
 
 from flowboard.routes.auth import _reset_db_tier_cache_for_tests
-from flowboard.services.flow_client import flow_client
+from flowboard.services.flow_client import FlowClient
+from flowboard.services.registry import registry
+
+
+def _get_fc(auth_headers: dict, client) -> FlowClient:
+    """Return (or create) the FlowClient for the fixture account (id=1)."""
+    fc = registry.get(1)
+    if fc is None:
+        fc = FlowClient()
+        registry._conns[1] = (fc, None)
+    return fc
 
 
 @pytest.fixture(autouse=True)
 def _reset_state():
-    """Each test gets a clean cached identity — flow_client is a module
-    singleton that bleeds state across tests otherwise. Also flush the
-    DB-tier TTL cache so tier-fallback tests don't see stale answers."""
-    flow_client._user_info = None
-    flow_client._paygate_tier = None
+    """Each test gets a clean registry entry for account 1."""
+    # Clean slate
+    registry._conns.pop(1, None)
     _reset_db_tier_cache_for_tests()
     yield
-    flow_client._user_info = None
-    flow_client._paygate_tier = None
+    registry._conns.pop(1, None)
     _reset_db_tier_cache_for_tests()
 
 
-def test_me_returns_null_fields_when_no_data_yet(client):
-    r = client.get("/api/auth/me")
+def test_me_returns_null_fields_when_no_data_yet(client, auth):
+    r = client.get("/api/auth/me", headers=auth)
     assert r.status_code == 200
     body = r.json()
     assert body == {
@@ -37,30 +44,27 @@ def test_me_returns_null_fields_when_no_data_yet(client):
     }
 
 
-def test_me_returns_cached_profile_after_user_info_message(client):
+def test_me_returns_cached_profile_after_user_info_message(client, auth):
     """Simulate the extension pushing a user_info WS message — the
-    route must surface the profile straight from flow_client's cache."""
-    profile = {
+    route must surface the profile straight from the registry FlowClient."""
+    fc = FlowClient()
+    fc._user_info = {
         "email": "tuan@example.com",
         "name": "Tuan Nguyen",
         "picture": "https://example.com/avatar.png",
         "verified_email": True,
-        "id": "1234567890",
-        "locale": "vi",
     }
-    flow_client._user_info = profile
-    flow_client._paygate_tier = "PAYGATE_TIER_TWO"
+    fc._paygate_tier = "PAYGATE_TIER_TWO"
+    registry._conns[1] = (fc, None)
 
-    r = client.get("/api/auth/me")
+    r = client.get("/api/auth/me", headers=auth)
     assert r.status_code == 200
     body = r.json()
-    # Whitelisted fields surface; other fields stay server-side.
     assert body["email"] == "tuan@example.com"
     assert body["name"] == "Tuan Nguyen"
     assert body["picture"] == "https://example.com/avatar.png"
     assert body["verified_email"] is True
     assert body["paygate_tier"] == "PAYGATE_TIER_TWO"
-    # Internal-only fields must not leak.
     assert "id" not in body
     assert "locale" not in body
 
@@ -68,8 +72,9 @@ def test_me_returns_cached_profile_after_user_info_message(client):
 @pytest.mark.asyncio
 async def test_handle_message_caches_user_info():
     """The user_info WS frame from the extension populates
-    flow_client._user_info and is then visible via the public property."""
-    await flow_client.handle_message({
+    fc._user_info and is visible via the public property."""
+    fc = FlowClient()
+    await fc.handle_message({
         "type": "user_info",
         "userInfo": {
             "email": "x@example.com",
@@ -77,7 +82,7 @@ async def test_handle_message_caches_user_info():
             "picture": "https://example.com/p.png",
         },
     })
-    assert flow_client.user_info == {
+    assert fc.user_info == {
         "email": "x@example.com",
         "name": "X User",
         "picture": "https://example.com/p.png",
@@ -86,68 +91,62 @@ async def test_handle_message_caches_user_info():
 
 @pytest.mark.asyncio
 async def test_handle_message_strips_extra_userinfo_fields():
-    """Defense-in-depth — even if Google's userinfo response carries
-    extra fields (id, locale, hd, given_name…), only the four
-    whitelisted keys are cached so future surfaces that read
-    flow_client.user_info directly can't leak PII."""
-    await flow_client.handle_message({
+    """Defense-in-depth — only the four whitelisted keys are cached."""
+    fc = FlowClient()
+    await fc.handle_message({
         "type": "user_info",
         "userInfo": {
             "email": "u@example.com",
             "name": "U",
             "picture": "https://x/p.png",
             "verified_email": True,
-            # Fields that MUST get dropped:
             "id": "1234567890",
             "locale": "vi",
             "hd": "example.com",
             "given_name": "U",
             "family_name": "Surname",
-            # Hypothetical malicious / unexpected key:
             "__proto__": "bad",
         },
     })
-    info = flow_client.user_info
+    info = fc.user_info
     assert info is not None
     assert set(info.keys()) == {"email", "name", "picture", "verified_email"}
 
 
 @pytest.mark.asyncio
 async def test_handle_message_ignores_non_dict_userinfo():
-    """Defensive — a malformed frame must not crash the handler or
-    stomp on the cached identity."""
-    flow_client._user_info = {"email": "kept@example.com"}
-    await flow_client.handle_message({"type": "user_info", "userInfo": "garbage"})
-    assert flow_client.user_info == {"email": "kept@example.com"}
+    """Defensive — a malformed frame must not crash the handler."""
+    fc = FlowClient()
+    fc._user_info = {"email": "kept@example.com"}
+    await fc.handle_message({"type": "user_info", "userInfo": "garbage"})
+    assert fc.user_info == {"email": "kept@example.com"}
 
 
 @pytest.mark.asyncio
 async def test_clear_extension_drops_cached_userinfo_and_tier():
-    """When the extension disconnects we drop the cached profile + tier
-    so a stale identity never leaks if the user signs out + back in."""
-    flow_client._user_info = {"email": "stale@example.com"}
-    flow_client._paygate_tier = "PAYGATE_TIER_TWO"
-    flow_client.clear_extension()
-    assert flow_client.user_info is None
-    assert flow_client.paygate_tier is None
+    """When the extension disconnects we drop the cached profile + tier."""
+    fc = FlowClient()
+    fc._user_info = {"email": "stale@example.com"}
+    fc._paygate_tier = "PAYGATE_TIER_TWO"
+    fc.clear_extension()
+    assert fc.user_info is None
+    assert fc.paygate_tier is None
 
 
 @pytest.mark.asyncio
 async def test_fetch_paygate_tier_resolves_authoritatively(monkeypatch):
-    """Happy path — Bearer token cached, /v1/credits returns 200 with
-    a known tier. flow_client caches tier + sku + credits and the next
-    /api/auth/me sees them."""
+    """Happy path — Bearer token cached, /v1/credits returns 200 with a known tier."""
     import httpx
-    flow_client._flow_key = "ya29.fake-bearer-token"
-    flow_client._paygate_tier = None
-    flow_client._sku = None
-    flow_client._credits = None
+    fc = FlowClient()
+    fc._flow_key = "ya29.fake-bearer-token"
+    fc._paygate_tier = None
+    fc._sku = None
+    fc._credits = None
 
     captured: dict = {}
 
     class _MockResponse:
         status_code = 200
-
         def json(self):
             return {
                 "credits": 24340,
@@ -169,40 +168,35 @@ async def test_fetch_paygate_tier_resolves_authoritatively(monkeypatch):
 
     monkeypatch.setattr(httpx, "AsyncClient", _MockClient)
 
-    ok = await flow_client.fetch_paygate_tier()
+    ok = await fc.fetch_paygate_tier()
     assert ok is True
-    assert flow_client.paygate_tier == "PAYGATE_TIER_TWO"
-    assert flow_client.sku == "WS_ULTRA"
-    assert flow_client.credits == 24340
-
-    # Verify the request shape — Flow's /v1/credits expects the public
-    # API key as a query param + Bearer auth + labs.google origin.
+    assert fc.paygate_tier == "PAYGATE_TIER_TWO"
+    assert fc.sku == "WS_ULTRA"
+    assert fc.credits == 24340
     assert captured["url"] == "https://aisandbox-pa.googleapis.com/v1/credits"
-    assert captured["params"]["key"].startswith("AIza")  # public Flow key
+    assert captured["params"]["key"].startswith("AIza")
     assert captured["headers"]["authorization"] == "Bearer ya29.fake-bearer-token"
     assert captured["headers"]["origin"] == "https://labs.google"
 
 
 @pytest.mark.asyncio
 async def test_fetch_paygate_tier_returns_false_without_token():
-    """No Bearer token cached → fetch is a no-op, returns False so
-    callers know the cache wasn't updated. Avoids hitting the network
-    with an empty Authorization header."""
-    flow_client._flow_key = None
-    flow_client._paygate_tier = None
-    ok = await flow_client.fetch_paygate_tier()
+    """No Bearer token cached → fetch is a no-op, returns False."""
+    fc = FlowClient()
+    fc._flow_key = None
+    fc._paygate_tier = None
+    ok = await fc.fetch_paygate_tier()
     assert ok is False
-    assert flow_client.paygate_tier is None
+    assert fc.paygate_tier is None
 
 
 @pytest.mark.asyncio
 async def test_fetch_paygate_tier_handles_expired_token(monkeypatch):
-    """HTTP 401 from /v1/credits = token expired/revoked. fetch
-    returns False, doesn't poison the cache, callers should treat as
-    'extension needs to re-capture token'."""
+    """HTTP 401 from /v1/credits = token expired. Returns False, doesn't poison cache."""
     import httpx
-    flow_client._flow_key = "ya29.expired"
-    flow_client._paygate_tier = None
+    fc = FlowClient()
+    fc._flow_key = "ya29.expired"
+    fc._paygate_tier = None
 
     class _MockResponse:
         status_code = 401
@@ -217,21 +211,18 @@ async def test_fetch_paygate_tier_handles_expired_token(monkeypatch):
             return _MockResponse()
 
     monkeypatch.setattr(httpx, "AsyncClient", _MockClient)
-
-    ok = await flow_client.fetch_paygate_tier()
+    ok = await fc.fetch_paygate_tier()
     assert ok is False
-    assert flow_client.paygate_tier is None
+    assert fc.paygate_tier is None
 
 
 @pytest.mark.asyncio
 async def test_fetch_paygate_tier_rejects_unknown_tier_value(monkeypatch):
-    """Defensive — Flow API contract change that returns an unknown
-    tier value (e.g. PAYGATE_TIER_THREE in the future) must NOT
-    silently set the cache to that string. Returns False, leaves
-    cache untouched."""
+    """Unknown tier value must NOT silently set the cache."""
     import httpx
-    flow_client._flow_key = "ya29.fake"
-    flow_client._paygate_tier = None
+    fc = FlowClient()
+    fc._flow_key = "ya29.fake"
+    fc._paygate_tier = None
 
     class _MockResponse:
         status_code = 200
@@ -246,35 +237,33 @@ async def test_fetch_paygate_tier_rejects_unknown_tier_value(monkeypatch):
             return _MockResponse()
 
     monkeypatch.setattr(httpx, "AsyncClient", _MockClient)
-    ok = await flow_client.fetch_paygate_tier()
+    ok = await fc.fetch_paygate_tier()
     assert ok is False
-    assert flow_client.paygate_tier is None
+    assert fc.paygate_tier is None
 
 
-def test_logout_clears_cached_identity_and_tier(client):
-    """POST /api/auth/logout drops the cached profile + tier so the
-    next /me reflects the logged-out state immediately. extension_notified
-    is False here because no real WS is attached in the test harness —
-    that's the expected return when the user never connected."""
-    flow_client._user_info = {
+def test_logout_clears_cached_identity_and_tier(client, auth):
+    """POST /api/auth/logout drops the cached profile + tier."""
+    fc = FlowClient()
+    fc._user_info = {
         "email": "u@example.com", "name": "U",
         "picture": "https://x/p.png", "verified_email": True,
     }
-    flow_client._paygate_tier = "PAYGATE_TIER_TWO"
+    fc._paygate_tier = "PAYGATE_TIER_TWO"
+    registry._conns[1] = (fc, None)
 
-    r = client.post("/api/auth/logout")
+    r = client.post("/api/auth/logout", headers=auth)
     assert r.status_code == 200
     body = r.json()
     assert body == {"ok": True, "extension_notified": False}
 
-    me = client.get("/api/auth/me").json()
+    me = client.get("/api/auth/me", headers=auth).json()
     assert me["email"] is None
     assert me["paygate_tier"] is None
 
 
-def test_logout_notifies_extension_when_ws_connected(client):
-    """When the WebSocket is open, /logout pushes a `logout` message
-    so the extension drops its in-memory token + cachedUserInfo."""
+def test_logout_notifies_extension_when_ws_connected(client, auth):
+    """When the WebSocket is open, /logout pushes a `logout` message."""
     sent: list[dict] = []
 
     class _FakeWs:
@@ -282,23 +271,23 @@ def test_logout_notifies_extension_when_ws_connected(client):
             import json
             sent.append(json.loads(payload))
 
-    flow_client.set_extension(_FakeWs())
-    flow_client._user_info = {"email": "u@example.com"}
+    fc = FlowClient()
+    fc.set_extension(_FakeWs())
+    fc._user_info = {"email": "u@example.com"}
+    registry._conns[1] = (fc, _FakeWs())
 
-    r = client.post("/api/auth/logout")
+    r = client.post("/api/auth/logout", headers=auth)
     assert r.status_code == 200
     assert r.json()["extension_notified"] is True
     assert sent == [{"type": "logout"}]
-    # Cleared agent-side too.
-    assert flow_client.user_info is None
+    assert fc.user_info is None
 
 
-def test_scan_reports_disconnected_state_when_no_extension(client):
-    """No WS connection → scan reports it cleanly so the frontend can
-    surface a "extension not found" hint to the user."""
-    flow_client.clear_extension()
+def test_scan_reports_disconnected_state_when_no_extension(client, auth):
+    """No registry entry → scan reports disconnected cleanly."""
+    registry._conns.pop(1, None)
 
-    r = client.post("/api/auth/scan")
+    r = client.post("/api/auth/scan", headers=auth)
     assert r.status_code == 200
     assert r.json() == {
         "extension_connected": False,
@@ -309,10 +298,8 @@ def test_scan_reports_disconnected_state_when_no_extension(client):
     }
 
 
-def test_scan_nudges_extension_when_connected_but_userinfo_empty(client):
-    """WS open + agent has no cached profile → scan asks the extension
-    to re-fetch userinfo. This is the "user clicked Scan after agent
-    restart" path — the WS is fine but the cache is cold."""
+def test_scan_nudges_extension_when_connected_but_userinfo_empty(client, auth):
+    """WS open + agent has no cached profile → scan asks extension to re-fetch."""
     sent: list[dict] = []
 
     class _FakeWs:
@@ -320,11 +307,13 @@ def test_scan_nudges_extension_when_connected_but_userinfo_empty(client):
             import json
             sent.append(json.loads(payload))
 
-    flow_client.set_extension(_FakeWs())
-    flow_client._user_info = None
-    flow_client._paygate_tier = None
+    fc = FlowClient()
+    fc.set_extension(_FakeWs())
+    fc._user_info = None
+    fc._paygate_tier = None
+    registry._conns[1] = (fc, _FakeWs())
 
-    r = client.post("/api/auth/scan")
+    r = client.post("/api/auth/scan", headers=auth)
     assert r.status_code == 200
     body = r.json()
     assert body["extension_connected"] is True
@@ -333,9 +322,8 @@ def test_scan_nudges_extension_when_connected_but_userinfo_empty(client):
     assert sent == [{"type": "please_resend_userinfo"}]
 
 
-def test_scan_does_not_nudge_when_userinfo_already_cached(client):
-    """Cache already populated → no nudge needed; scan just reports
-    state. Avoids spamming the extension on every Scan click."""
+def test_scan_does_not_nudge_when_userinfo_already_cached(client, auth):
+    """Cache already populated → no nudge needed."""
     sent: list[dict] = []
 
     class _FakeWs:
@@ -343,35 +331,22 @@ def test_scan_does_not_nudge_when_userinfo_already_cached(client):
             import json
             sent.append(json.loads(payload))
 
-    flow_client.set_extension(_FakeWs())
-    flow_client._user_info = {"email": "u@example.com"}
-    flow_client._paygate_tier = "PAYGATE_TIER_TWO"
+    fc = FlowClient()
+    fc.set_extension(_FakeWs())
+    fc._user_info = {"email": "u@example.com"}
+    fc._paygate_tier = "PAYGATE_TIER_TWO"
+    registry._conns[1] = (fc, _FakeWs())
 
-    r = client.post("/api/auth/scan")
+    r = client.post("/api/auth/scan", headers=auth)
     assert r.json()["userinfo_nudged"] is False
     assert sent == []
 
 
-def test_me_returns_null_tier_when_extension_has_not_pushed(client):
-    """Regression guard for the silent-Pro-downgrade bug.
+def test_me_returns_null_tier_when_extension_has_not_pushed(client, auth):
+    """Regression guard: /api/auth/me returns null paygate_tier when not set."""
+    # No fc in registry → returns all nulls
+    registry._conns.pop(1, None)
 
-    Old behaviour: when `flow_client.paygate_tier` was None, /api/auth/me
-    fell back to scanning request.params for the most recently observed
-    tier. Combined with the worker's old default of PAYGATE_TIER_ONE,
-    that meant any gen dispatched before extension sniffed would stamp
-    Pro into the DB, and subsequent /me calls would report Pro forever
-    even for Ultra users.
-
-    Now the route returns `paygate_tier: null` in this state. The
-    AccountPanel surfaces a "Tier unknown — open Flow tab" banner so
-    the user sees the gap explicitly instead of being silently lied to.
-    """
-    flow_client._paygate_tier = None
-
-    # Even with a polluted DB row stamped at PAYGATE_TIER_ONE — the kind
-    # the old code used to "recover" the tier from — the route MUST
-    # return null. We don't trust DB-stamped tiers anymore because the
-    # path that wrote them was the bug.
     from flowboard.db import get_session
     from flowboard.db.models import Request
     with get_session() as s:
@@ -383,6 +358,6 @@ def test_me_returns_null_tier_when_extension_has_not_pushed(client):
         ))
         s.commit()
 
-    r = client.get("/api/auth/me")
+    r = client.get("/api/auth/me", headers=auth)
     assert r.status_code == 200
     assert r.json()["paygate_tier"] is None

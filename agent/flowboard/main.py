@@ -1,32 +1,19 @@
 import asyncio
-import hmac
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Header, Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
+from sqlmodel import select as _select_dt
 
-from flowboard.config import WS_HOST
 from flowboard.db import get_session, init_db
-from flowboard.db.models import Request
+from flowboard.db.models import DeviceToken, Request
 from flowboard.routes import account_auth, activity, auth, boards, chat, edges, ext_ws, extension, flow_projects, llm, media, nodes, plans, projects, prompt, upload, vision
 from flowboard.routes import references as references_route
 from flowboard.routes import requests as requests_route
-from flowboard.services.flow_client import flow_client
-from flowboard.services.ws_server import run_ws_server
+from flowboard.services.registry import registry
+from flowboard.services.security import hash_token
 from flowboard.worker.processor import get_worker
-
-# Guard rail: the dedicated WS server is unauthenticated and would expose the
-# callback secret to any process that can reach it. Refuse to boot if someone
-# overrode WS_HOST to a non-loopback address.
-# 0.0.0.0 is allowed for Docker: the container binds all interfaces, but
-# docker-compose exposes the port only on 127.0.0.1 on the host side
-# (ports: "127.0.0.1:9222:9222"), keeping network exposure equivalent to loopback.
-if WS_HOST not in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
-    raise RuntimeError(
-        f"FLOWBOARD_WS_HOST must be loopback or 0.0.0.0 (got {WS_HOST!r}); "
-        "the extension WS is unauthenticated by design and must not be network-reachable."
-    )
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -59,9 +46,8 @@ async def lifespan(app: FastAPI):
     if recovered:
         logger.info("recovered %d orphan running request(s) → failed", recovered)
     worker = get_worker()
-    ws_task = asyncio.create_task(run_ws_server(), name="ext-ws-server")
     worker_task = asyncio.create_task(worker.start(), name="request-worker")
-    logger.info("flowboard agent started (ws:9223 + worker)")
+    logger.info("flowboard agent started (worker)")
     try:
         yield
     finally:
@@ -70,9 +56,8 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(worker.drain(), timeout=5.0)
         except asyncio.TimeoutError:
             logger.warning("worker drain timed out")
-        for t in (ws_task, worker_task):
-            t.cancel()
-        await asyncio.gather(ws_task, worker_task, return_exceptions=True)
+        worker_task.cancel()
+        await asyncio.gather(worker_task, return_exceptions=True)
         logger.info("flowboard agent stopped")
 
 
@@ -128,31 +113,29 @@ else:
 
 @app.get("/api/health")
 def health() -> dict:
-    return {
-        "ok": True,
-        "extension_connected": flow_client.connected,
-        "ws_stats": flow_client.ws_stats,
-    }
+    return {"ok": True, "online_accounts": len(registry._conns)}
 
 
 @app.post("/api/ext/callback")
 async def ext_callback(
     body: FastAPIRequest,
-    x_callback_secret: str | None = Header(default=None, alias="X-Callback-Secret"),
+    x_device_token: str | None = Header(default=None, alias="X-Device-Token"),
 ) -> dict:
-    """HTTP callback for the extension to deliver API responses."""
-    if not x_callback_secret or not hmac.compare_digest(
-        x_callback_secret, flow_client.callback_secret
-    ):
-        raise HTTPException(status_code=401, detail="invalid callback secret")
-
+    if not x_device_token:
+        raise HTTPException(status_code=401, detail="missing device token")
+    with get_session() as s:
+        row = s.exec(
+            _select_dt(DeviceToken).where(DeviceToken.token_hash == hash_token(x_device_token))
+        ).first()
+        if row is None or row.revoked_at is not None:
+            raise HTTPException(status_code=401, detail="invalid device token")
+        account_id = row.account_id
     try:
         payload = await body.json()
     except Exception:
         raise HTTPException(status_code=400, detail="invalid json body")
-
     if not isinstance(payload, dict) or "id" not in payload:
         raise HTTPException(status_code=400, detail="missing id")
-
-    matched = flow_client.resolve_callback(payload)
+    fc = registry.get(account_id)
+    matched = fc.resolve_callback(payload) if fc is not None else False
     return {"ok": matched}

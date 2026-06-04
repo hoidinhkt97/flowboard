@@ -10,6 +10,7 @@ import pytest
 
 from flowboard.services import media as media_service
 from flowboard.services import flow_sdk as flow_sdk_module
+from flowboard.worker import processor as proc_module
 from flowboard.worker.processor import _handle_gen_image
 
 
@@ -303,12 +304,13 @@ async def test_handle_gen_image_passes_ref_media_ids(monkeypatch):
             captured.update(kwargs)
             return {"raw": {"ok": True}, "media_ids": ["m-1"], "media_entries": []}
 
-    monkeypatch.setattr(flow_sdk_module, "_sdk", _Stub())
+    monkeypatch.setattr(proc_module, "get_flow_sdk", lambda fc=None: _Stub())
 
     result, err = await _handle_gen_image(
         {
             "prompt": "a hero",
             "project_id": "abcd1234",
+            "paygate_tier": "PAYGATE_TIER_ONE",
             "ref_media_ids": ["src-1", "src-2", "", None, 7],
         }
     )
@@ -327,12 +329,13 @@ async def test_handle_gen_image_legacy_character_media_ids_still_works(monkeypat
             captured.update(kwargs)
             return {"raw": {"ok": True}, "media_ids": ["m-1"], "media_entries": []}
 
-    monkeypatch.setattr(flow_sdk_module, "_sdk", _Stub())
+    monkeypatch.setattr(proc_module, "get_flow_sdk", lambda fc=None: _Stub())
 
     await _handle_gen_image(
         {
             "prompt": "x",
             "project_id": "abcd1234",
+            "paygate_tier": "PAYGATE_TIER_ONE",
             "character_media_ids": ["legacy-1"],
         }
     )
@@ -349,8 +352,8 @@ async def test_handle_gen_image_no_refs(monkeypatch):
             captured.update(kwargs)
             return {"raw": {}, "media_ids": [], "media_entries": []}
 
-    monkeypatch.setattr(flow_sdk_module, "_sdk", _Stub())
-    await _handle_gen_image({"prompt": "x", "project_id": "abcd1234"})
+    monkeypatch.setattr(proc_module, "get_flow_sdk", lambda fc=None: _Stub())
+    await _handle_gen_image({"prompt": "x", "project_id": "abcd1234", "paygate_tier": "PAYGATE_TIER_ONE"})
     assert captured.get("ref_media_ids") is None
 
 
@@ -366,9 +369,9 @@ async def test_handle_gen_image_passes_variant_count(monkeypatch):
             captured.update(kwargs)
             return {"raw": {}, "media_ids": ["a", "b", "c", "d"], "media_entries": []}
 
-    monkeypatch.setattr(flow_sdk_module, "_sdk", _Stub())
+    monkeypatch.setattr(proc_module, "get_flow_sdk", lambda fc=None: _Stub())
     await _handle_gen_image(
-        {"prompt": "x", "project_id": "abcd1234", "variant_count": 4}
+        {"prompt": "x", "project_id": "abcd1234", "paygate_tier": "PAYGATE_TIER_ONE", "variant_count": 4}
     )
     assert captured["variant_count"] == 4
 
@@ -382,8 +385,8 @@ async def test_handle_gen_image_defaults_variant_count_to_1(monkeypatch):
             captured.update(kwargs)
             return {"raw": {}, "media_ids": ["a"], "media_entries": []}
 
-    monkeypatch.setattr(flow_sdk_module, "_sdk", _Stub())
-    await _handle_gen_image({"prompt": "x", "project_id": "abcd1234"})
+    monkeypatch.setattr(proc_module, "get_flow_sdk", lambda fc=None: _Stub())
+    await _handle_gen_image({"prompt": "x", "project_id": "abcd1234", "paygate_tier": "PAYGATE_TIER_ONE"})
     assert captured["variant_count"] == 1
 
 
@@ -450,11 +453,12 @@ async def test_handle_edit_image_happy_path(monkeypatch):
             captured.update(kwargs)
             return {"raw": {}, "media_ids": ["new-1"], "media_entries": []}
 
-    monkeypatch.setattr(flow_sdk_module, "_sdk", _Stub())
+    monkeypatch.setattr(proc_module, "get_flow_sdk", lambda fc=None: _Stub())
     result, err = await _handle_edit_image(
         {
             "prompt": "warmer light",
             "project_id": "abcd1234",
+            "paygate_tier": "PAYGATE_TIER_ONE",
             "source_media_id": "src-1",
             "ref_media_ids": ["ref-1", "", None, "ref-2"],
         }
@@ -472,9 +476,9 @@ async def test_handle_edit_image_rejects_missing_source(monkeypatch):
         async def edit_image(self, **kwargs):
             raise AssertionError("must not call SDK without source")
 
-    monkeypatch.setattr(flow_sdk_module, "_sdk", _Stub())
+    monkeypatch.setattr(proc_module, "get_flow_sdk", lambda fc=None: _Stub())
     _, err = await _handle_edit_image(
-        {"prompt": "p", "project_id": "abcd1234"}
+        {"prompt": "p", "project_id": "abcd1234", "paygate_tier": "PAYGATE_TIER_ONE"}
     )
     assert err == "missing_source_media_id"
 

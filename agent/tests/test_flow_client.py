@@ -86,12 +86,6 @@ async def test_handle_token_captured_updates_stats():
     assert stats["token_age_s"] >= 0
 
 
-def test_callback_secret_is_unique_per_instance():
-    a = FlowClient()
-    b = FlowClient()
-    assert a.callback_secret != b.callback_secret
-    assert len(a.callback_secret) >= 32
-
 
 @pytest.mark.asyncio
 async def test_api_request_passes_captcha_action_through():

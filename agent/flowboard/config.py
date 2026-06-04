@@ -17,8 +17,6 @@ DEVICE_TOKEN_TTL_DAYS = int(os.getenv("FLOWBOARD_DEVICE_TOKEN_TTL_DAYS", "90"))
 ENCRYPTION_KEY = os.getenv("FLOWBOARD_ENCRYPTION_KEY", "")
 
 HTTP_PORT = int(os.getenv("FLOWBOARD_HTTP_PORT", "8101"))
-WS_HOST = os.getenv("FLOWBOARD_WS_HOST", "127.0.0.1")
-EXTENSION_WS_PORT = int(os.getenv("FLOWBOARD_EXT_WS_PORT", "9223"))
 
 PLANNER_MODEL = os.getenv("FLOWBOARD_PLANNER_MODEL", "claude-sonnet-4-6")
 # "cli" → always use claude CLI; "mock" → always mock; "auto" → CLI if available,

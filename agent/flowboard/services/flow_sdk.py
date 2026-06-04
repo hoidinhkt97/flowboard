@@ -17,7 +17,7 @@ import time
 import uuid
 from typing import Any, Optional
 
-from flowboard.services.flow_client import FlowClient, flow_client
+from flowboard.services.flow_client import FlowClient
 
 logger = logging.getLogger(__name__)
 
@@ -310,7 +310,7 @@ class FlowSDK:
     """High-level helpers on top of ``flow_client``. Stateless."""
 
     def __init__(self, client: Optional[FlowClient] = None) -> None:
-        self._client = client or flow_client
+        self._client = client
 
     # ── project listing (TRPC search) ──────────────────────────────────────
     async def search_user_projects(
@@ -1341,20 +1341,16 @@ def extract_media_entries(resp: Any) -> list[dict[str, Any]]:
     return out
 
 
+# Retained as a monkeypatch anchor for tests that set flow_sdk_module._sdk = stub.
+# The variable is no longer used by get_flow_sdk() itself.
 _sdk: Optional[FlowSDK] = None
 
 
 def get_flow_sdk(client: Optional[FlowClient] = None) -> FlowSDK:
     """Return a FlowSDK instance.
 
-    When `client` is provided (processor handlers pass the per-account
-    FlowClient from the registry), returns a fresh instance bound to it.
-    When omitted, falls back to the module-level singleton — used by
-    routes that don't yet have per-account context (cleaned up in Task 6).
+    Pass a per-account FlowClient (from the registry) for authenticated calls.
+    Routes without per-account context may call with no argument; those calls
+    will fail at the WS-send layer if no extension is connected.
     """
-    if client is not None:
-        return FlowSDK(client=client)
-    global _sdk
-    if _sdk is None:
-        _sdk = FlowSDK()
-    return _sdk
+    return FlowSDK(client=client)

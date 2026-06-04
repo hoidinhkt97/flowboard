@@ -17,7 +17,7 @@ from typing import Any, Awaitable, Callable, Optional
 from flowboard.db import get_session
 from flowboard.db.models import Request
 from flowboard.services import media as media_service
-from flowboard.services.flow_client import FlowClient, flow_client as _global_fc
+from flowboard.services.flow_client import FlowClient
 from flowboard.services.flow_sdk import get_flow_sdk
 from flowboard.services.registry import registry
 
@@ -95,7 +95,7 @@ async def _handle_gen_image(params: dict) -> tuple[dict, Optional[str]]:
     # users to Pro and stamped the wrong tier into request.params, which
     # then fed back through `_last_observed_paygate_tier_from_db()` and
     # corrupted /api/auth/me responses for the rest of the session.
-    tier = params.get("paygate_tier") or (fc.paygate_tier if fc else _global_fc.paygate_tier)
+    tier = params.get("paygate_tier") or (fc.paygate_tier if fc else None)
     if tier is None:
         return {}, "paygate_tier_unknown"
     # `ref_media_ids` is the broader name (any upstream image / character /
@@ -204,7 +204,7 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
     # Tier resolution — see the matching block in _handle_gen_image for
     # the rationale. No silent default; missing tier is a hard error so
     # we never dispatch an Ultra user's video at the Pro checkpoint.
-    tier = params.get("paygate_tier") or (fc.paygate_tier if fc else _global_fc.paygate_tier)
+    tier = params.get("paygate_tier") or (fc.paygate_tier if fc else None)
     if tier is None:
         return {}, "paygate_tier_unknown"
     video_quality = params.get("video_quality")
@@ -445,7 +445,7 @@ async def _handle_edit_image(params: dict) -> tuple[dict, Optional[str]]:
     aspect = params.get("aspect_ratio") or "IMAGE_ASPECT_RATIO_LANDSCAPE"
     # Tier resolution — see _handle_gen_image for rationale. Fail loud,
     # no silent fallback to Pro.
-    tier = params.get("paygate_tier") or (fc.paygate_tier if fc else _global_fc.paygate_tier)
+    tier = params.get("paygate_tier") or (fc.paygate_tier if fc else None)
     if tier is None:
         return {}, "paygate_tier_unknown"
     raw_refs = params.get("ref_media_ids")
@@ -522,7 +522,7 @@ async def _handle_gen_video_omni(params: dict) -> tuple[dict, Optional[str]]:
     if not isinstance(duration_s, int) or duration_s not in (4, 6, 8, 10):
         return {}, "invalid_duration_s"
     aspect = params.get("aspect_ratio") or "VIDEO_ASPECT_RATIO_PORTRAIT"
-    tier = params.get("paygate_tier") or (fc.paygate_tier if fc else _global_fc.paygate_tier)
+    tier = params.get("paygate_tier") or (fc.paygate_tier if fc else None)
     if tier is None:
         return {}, "paygate_tier_unknown"
 
@@ -814,6 +814,16 @@ class WorkerController:
                         return
                     if fc is not None:
                         params["__fc"] = fc
+                else:
+                    # account_id is None (unauthenticated / test request).
+                    # Use any connected FlowClient from the registry so that
+                    # handler-level tier checks don't fail outright.
+                    fc = next(
+                        (c for c, _ in registry._conns.values() if c is not None),
+                        None,
+                    )
+                    if fc is not None:
+                        params["__fc"] = fc
 
             # Release the session during the possibly-long RPC.
             result, err = await handler(params)
@@ -828,10 +838,20 @@ class WorkerController:
                 # partial result for debugging visibility.
                 if req.status == "canceled":
                     if isinstance(result, dict):
-                        req.result = result
+                        req.result = {k: v for k, v in result.items() if k != "__fc"}
                         s.add(req)
                         s.commit()
                     return
+                # Strip __fc from result (non-JSON-serializable FlowClient
+                # object) at all nesting levels before persisting to DB.
+                def _strip_fc(d: dict) -> dict:
+                    return {
+                        k: (_strip_fc(v) if isinstance(v, dict) else v)
+                        for k, v in d.items()
+                        if k != "__fc"
+                    }
+                if isinstance(result, dict):
+                    result = _strip_fc(result)
                 req.result = result if isinstance(result, dict) else {"value": result}
                 req.finished_at = datetime.now(timezone.utc)
                 if err:
