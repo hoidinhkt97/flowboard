@@ -34,6 +34,7 @@ Flowboard hiện là công cụ **local-only, single-user**:
 | Phạm vi v1 | Auth tối thiểu (email+mật khẩu), **chưa** email verify/reset/billing |
 | Topology | **Hướng A — single-instance + connection registry in-memory** |
 | Migrate dữ liệu local cũ | **Không** — v1 khởi tạo DB rỗng |
+| Logo / branding | **Dùng `desktop/assets/icon.png`** (app icon node-block "F" gradient xanh→cyan→tím trên nền navy). Không tạo logo mới; khi ráp UI thay placeholder bằng file này |
 
 ---
 
