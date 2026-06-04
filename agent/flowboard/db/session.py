@@ -21,15 +21,10 @@ if _is_sqlite:
         cur.close()
 
 
-def init_db() -> None:
+def _sqlite_targeted_migration() -> None:
     from sqlalchemy import inspect
+    from flowboard.db import models  # noqa: F401
 
-    from flowboard.db import models
-
-    # Targeted migration: if an older `asset` table exists without `url`,
-    # drop it. Acceptable because the app has not stored real asset rows
-    # prior to Run 6; other tables (board, node, edge, chatmessage, request)
-    # are left alone.
     with engine.connect() as conn:
         insp = inspect(conn)
         if insp.has_table("asset"):
@@ -38,21 +33,21 @@ def init_db() -> None:
                 models.Asset.__table__.drop(conn, checkfirst=True)
                 conn.commit()
 
-        # Edge.source_variant_idx — added when per-edge variant pinning
-        # shipped. SQLite ALTER TABLE ADD COLUMN is non-destructive (and
-        # idempotent via the column-existence check), so existing DBs
-        # pick up the new column on first boot without losing data.
-        # `create_all` below won't help because it skips ALTERs on
-        # existing tables.
-        if insp.has_table("edge"):
-            edge_cols = {c["name"] for c in insp.get_columns("edge")}
-            if "source_variant_idx" not in edge_cols:
-                conn.exec_driver_sql(
-                    "ALTER TABLE edge ADD COLUMN source_variant_idx INTEGER"
-                )
-                conn.commit()
 
-    SQLModel.metadata.create_all(engine)
+def init_db() -> None:
+    if _is_sqlite:
+        _sqlite_targeted_migration()
+        from flowboard.db import models  # noqa: F401
+        SQLModel.metadata.create_all(engine)
+    else:
+        import os
+        from alembic import command
+        from alembic.config import Config
+        ini_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "alembic.ini")
+        )
+        alembic_cfg = Config(ini_path)
+        command.upgrade(alembic_cfg, "head")
 
 
 @contextmanager
