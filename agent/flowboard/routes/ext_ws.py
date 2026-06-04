@@ -45,6 +45,7 @@ async def _reject(websocket: WebSocket, code: int, reason: str) -> None:
 async def ext_ws(websocket: WebSocket, token: str = ""):
     if not token:
         await _reject(websocket, _CLOSE_UNAUTHORIZED, "missing token")
+        return
 
     with get_session() as s:
         row = s.exec(
@@ -52,6 +53,7 @@ async def ext_ws(websocket: WebSocket, token: str = ""):
         ).first()
         if row is None or row.revoked_at is not None:
             await _reject(websocket, _CLOSE_UNAUTHORIZED, "invalid token")
+            return
         account_id = row.account_id
         row.last_seen_at = datetime.now(timezone.utc)
         s.add(row)
