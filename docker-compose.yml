@@ -9,6 +9,7 @@ services:
     volumes:
       - ./data/storage:/app/storage
       - ./data/codex:/root/.codex
+      - ./data/flowboard:/root/.flowboard
     ports:
       - "8101:8101"
       - "127.0.0.1:9223:9223"
