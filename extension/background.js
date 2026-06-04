@@ -5,13 +5,14 @@
  * Captures Bearer token and proxies API calls through the browser context.
  */
 
-const AGENT_WS_URL  = 'ws://127.0.0.1:9223';
-const CALLBACK_URL  = 'http://127.0.0.1:8101/api/ext/callback';
+const APP_ORIGIN   = 'http://localhost:8101';
+const PAIR_URL     = APP_ORIGIN + '/api/extension/pair';
+const CALLBACK_URL = APP_ORIGIN + '/api/ext/callback';
 
 let ws               = null;
 let flowKey          = null;
-let callbackSecret   = null; // Auth secret received from agent on WS connect
-let state            = 'off'; // off | idle | running
+let deviceToken      = null; // Raw device token for WS auth + callback auth
+let state            = 'off'; // off | idle | running | unpaired
 let manualDisconnect = false;
 let metrics = {
   tokenCapturedAt: null,
@@ -58,9 +59,17 @@ chrome.runtime.onInstalled.addListener(init);
 chrome.runtime.onStartup.addListener(init);
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'reconnect') connectToAgent();
+  if (alarm.name === 'reconnect') _reconnect();
   if (alarm.name === 'keepAlive') keepAlive();
 });
+
+function _reconnect() {
+  if (deviceToken) {
+    connectToServer(deviceToken);
+  } else {
+    pairWithServer().then((token) => { if (token) connectToServer(token); });
+  }
+}
 
 async function init() {
   // Note: deliberately not restoring `userInfo` from storage. We used
@@ -69,12 +78,40 @@ async function init() {
   // extensions on the profile that hold the `storage` permission.
   // The agent replays user_info on every WS reconnect anyway via
   // fetchAndPushUserInfo(token), so persistence buys nothing.
-  const data = await chrome.storage.local.get(['flowKey', 'metrics', 'callbackSecret']);
-  if (data.flowKey)        flowKey        = data.flowKey;
-  if (data.metrics)        Object.assign(metrics, data.metrics);
-  if (data.callbackSecret) callbackSecret = data.callbackSecret;
-  connectToAgent();
+  const data = await chrome.storage.local.get(['flowKey', 'metrics', 'deviceToken']);
+  if (data.flowKey)     flowKey     = data.flowKey;
+  if (data.metrics)     Object.assign(metrics, data.metrics);
+  if (data.deviceToken) deviceToken = data.deviceToken;
+
+  if (deviceToken) {
+    connectToServer(deviceToken);
+  } else {
+    const token = await pairWithServer();
+    if (token) {
+      connectToServer(token);
+    } else {
+      setState('unpaired');
+      scheduleReconnect();
+    }
+  }
   chrome.alarms.create('keepAlive', { periodInMinutes: 0.4 });
+}
+
+async function pairWithServer() {
+  try {
+    const cookie = await chrome.cookies.get({ url: APP_ORIGIN, name: 'fb_refresh' });
+    if (!cookie) return null;
+    const resp = await fetch(PAIR_URL, { method: 'POST', credentials: 'include' });
+    if (!resp.ok) return null;
+    const { device_token } = await resp.json();
+    deviceToken = device_token;
+    await chrome.storage.local.set({ deviceToken: device_token });
+    console.log('[Flowboard] Paired with server');
+    return device_token;
+  } catch (e) {
+    console.warn('[Flowboard] pairWithServer failed:', e?.message || e);
+    return null;
+  }
 }
 
 // ─── Token Capture ──────────────────────────────────────────
@@ -149,13 +186,15 @@ async function fetchAndPushUserInfo(token) {
 
 // ─── WebSocket to Agent ─────────────────────────────────────
 
-function connectToAgent() {
+function connectToServer(token) {
   if (manualDisconnect) return;
+  if (!token) return;
   if (ws?.readyState === WebSocket.CONNECTING) return;
   if (ws?.readyState === WebSocket.OPEN) return;
 
+  const wsUrl = APP_ORIGIN.replace('http', 'ws') + '/ext?token=' + token;
   try {
-    ws = new WebSocket(AGENT_WS_URL);
+    ws = new WebSocket(wsUrl);
   } catch (e) {
     console.error('[Flowboard] WS connect error:', e);
     scheduleReconnect();
@@ -195,11 +234,7 @@ function connectToAgent() {
     try {
       const msg = JSON.parse(data);
 
-      if (msg.type === 'callback_secret') {
-        callbackSecret = msg.secret;
-        chrome.storage.local.set({ callbackSecret: msg.secret });
-        console.log('[Flowboard] Received callback secret');
-      } else if (msg.type === 'pong') {
+      if (msg.type === 'pong') {
         // keepalive response — no-op
       } else if (msg.type === 'logout') {
         // Agent's /api/auth/logout invoked — drop in-memory identity
@@ -245,9 +280,18 @@ function connectToAgent() {
     }
   };
 
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     setState('off');
-    if (!manualDisconnect) scheduleReconnect();
+    if (event.code === 4401) {
+      console.warn('[Flowboard] WS closed: unauthorized (4401) — clearing device token');
+      deviceToken = null;
+      chrome.storage.local.remove('deviceToken');
+      setState('unpaired');
+    } else if (event.code === 4408) {
+      console.log('[Flowboard] WS closed: replaced by newer connection (4408)');
+    } else if (!manualDisconnect) {
+      scheduleReconnect();
+    }
   };
 
   ws.onerror = (e) => {
@@ -265,7 +309,7 @@ function keepAlive() {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'ping' }));
   } else {
-    connectToAgent();
+    _reconnect();
   }
 }
 
@@ -282,7 +326,7 @@ function sendToAgent(msg) {
       method:  'POST',
       headers: {
         'Content-Type':      'application/json',
-        'X-Callback-Secret': callbackSecret || '',
+        'X-Device-Token': deviceToken || '',
       },
       body: JSON.stringify(msg),
     }).catch(() => {
@@ -656,8 +700,8 @@ async function handleTrpcRequest(msg) {
 
 function setState(newState) {
   state = newState;
-  const badges = { idle: '●', running: '▶', off: '○' };
-  const colors  = { idle: '#22c55e', running: '#f5b301', off: '#6b7280' };
+  const badges = { idle: '●', running: '▶', off: '○', unpaired: '?' };
+  const colors  = { idle: '#22c55e', running: '#f5b301', off: '#6b7280', unpaired: '#ef4444' };
   chrome.action.setBadgeText({ text: badges[newState] || '' });
   chrome.action.setBadgeBackgroundColor({ color: colors[newState] || '#000' });
   broadcastStatus();
@@ -696,7 +740,7 @@ chrome.runtime.onMessage.addListener((msg, _, reply) => {
 
   if (msg.type === 'RECONNECT') {
     manualDisconnect = false;
-    connectToAgent();
+    _reconnect();
     reply({ ok: true });
     return true;
   }
