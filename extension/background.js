@@ -83,14 +83,18 @@ async function init() {
   if (data.metrics)     Object.assign(metrics, data.metrics);
   if (data.deviceToken) deviceToken = data.deviceToken;
 
+  console.log('[Flowboard] init: deviceToken in storage =', !!data.deviceToken);
   if (deviceToken) {
+    console.log('[Flowboard] init: reusing stored deviceToken, connecting...');
     connectToServer(deviceToken);
   } else {
+    console.log('[Flowboard] init: no deviceToken, attempting pair...');
     const token = await pairWithServer();
     if (token) {
       connectToServer(token);
     } else {
       setState('unpaired');
+      console.log('[Flowboard] init: pair failed, scheduling retry in ~5s');
       scheduleReconnect();
     }
   }
@@ -98,15 +102,23 @@ async function init() {
 }
 
 async function pairWithServer() {
+  console.log('[Flowboard] pairWithServer: checking cookie at', APP_ORIGIN + '/api/account/login');
   try {
     const cookie = await chrome.cookies.get({ url: APP_ORIGIN + '/api/account/login', name: 'fb_refresh' });
-    if (!cookie) return null;
+    if (!cookie) {
+      console.warn('[Flowboard] pairWithServer: no fb_refresh cookie — not logged in on web app');
+      return null;
+    }
+    console.log('[Flowboard] pairWithServer: cookie found, posting to', PAIR_URL);
     const resp = await fetch(PAIR_URL, { method: 'POST', credentials: 'include' });
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      console.warn('[Flowboard] pairWithServer: server returned', resp.status);
+      return null;
+    }
     const { device_token } = await resp.json();
     deviceToken = device_token;
     await chrome.storage.local.set({ deviceToken: device_token });
-    console.log('[Flowboard] Paired with server');
+    console.log('[Flowboard] Paired with server ✓');
     return device_token;
   } catch (e) {
     console.warn('[Flowboard] pairWithServer failed:', e?.message || e);
@@ -193,6 +205,7 @@ function connectToServer(token) {
   if (ws?.readyState === WebSocket.OPEN) return;
 
   const wsUrl = APP_ORIGIN.replace('http', 'ws') + '/ext?token=' + token;
+  console.log('[Flowboard] connectToServer: connecting to', wsUrl.replace(token, token.slice(0,8) + '...'));
   try {
     ws = new WebSocket(wsUrl);
   } catch (e) {
@@ -202,7 +215,7 @@ function connectToServer(token) {
   }
 
   ws.onopen = () => {
-    console.log('[Flowboard] Connected to agent');
+    console.log('[Flowboard] WS connected ✓');
     chrome.alarms.clear('reconnect');
     setState('idle');
 
