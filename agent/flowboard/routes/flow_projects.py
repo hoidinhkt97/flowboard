@@ -23,21 +23,23 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from flowboard.db import get_session
-from flowboard.db.models import Board, BoardFlowProject
-from flowboard.services.flow_sdk import get_flow_sdk, is_valid_project_id
+from flowboard.db.models import Account, Board, BoardFlowProject
+from flowboard.deps import get_current_account
+from flowboard.services.flow_sdk import FlowSDK, get_flow_sdk, is_valid_project_id
+from flowboard.services.registry import registry
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/flow/projects", tags=["flow-projects"])
 
 
-async def _resolve_remote_ids(tool: str) -> set[str]:
+async def _resolve_remote_ids(sdk: FlowSDK, tool: str) -> set[str]:
     """Pull the user's Flow project list and return just the id set.
     Raises HTTPException(502) on extension/TRPC failure."""
-    result = await get_flow_sdk().list_user_projects_all(tool=tool)
+    result = await sdk.list_user_projects_all(tool=tool)
     if result.get("error"):
         raise HTTPException(
             status_code=502,
@@ -48,7 +50,10 @@ async def _resolve_remote_ids(tool: str) -> set[str]:
 
 
 @router.get("")
-async def get_sync_status(tool: str = "PINHOLE"):
+async def get_sync_status(
+    tool: str = "PINHOLE",
+    acct: Account = Depends(get_current_account),
+):
     """Per-board sync status. Does NOT expose the Flow project list —
     this is a one-way sync (local → Flow), so the frontend only needs
     to know which boards are still synced.
@@ -61,7 +66,11 @@ async def get_sync_status(tool: str = "PINHOLE"):
           ]
         }
     """
-    remote_ids = await _resolve_remote_ids(tool)
+    fc = registry.get(acct.id)
+    if fc is None:
+        raise HTTPException(503, "extension_offline")
+    sdk = get_flow_sdk(client=fc)
+    remote_ids = await _resolve_remote_ids(sdk, tool)
     with get_session() as s:
         boards = s.query(Board).order_by(Board.created_at.desc()).all()
         binds = {
@@ -81,7 +90,10 @@ async def get_sync_status(tool: str = "PINHOLE"):
 
 
 @router.post("/sync-up")
-async def sync_up(tool: str = "PINHOLE"):
+async def sync_up(
+    tool: str = "PINHOLE",
+    acct: Account = Depends(get_current_account),
+):
     """Push every orphan board up to Flow. For each board where the
     bound flow_project_id is missing from Flow's remote list (or no
     binding exists at all), create a new Flow project and replace the
@@ -90,7 +102,11 @@ async def sync_up(tool: str = "PINHOLE"):
     Idempotent: boards already in sync are skipped. Returns a per-board
     action log so the UI can summarise ("synced N boards").
     """
-    remote_ids = await _resolve_remote_ids(tool)
+    fc = registry.get(acct.id)
+    if fc is None:
+        raise HTTPException(503, "extension_offline")
+    sdk = get_flow_sdk(client=fc)
+    remote_ids = await _resolve_remote_ids(sdk, tool)
 
     # Snapshot the boards that need work. Read-only pass to avoid
     # holding the session during the TRPC round-trips below.
@@ -107,7 +123,6 @@ async def sync_up(tool: str = "PINHOLE"):
         ]
 
     actions: list[dict] = []
-    sdk = get_flow_sdk()
 
     for board_id, board_name, old_pid in to_sync:
         resp = await sdk.create_project(title=board_name or "Untitled")
