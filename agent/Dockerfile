@@ -22,7 +22,10 @@ RUN pip install --no-cache-dir -e . --no-deps
 
 EXPOSE 8101
 
-HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8101/api/health')" || exit 1
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
-CMD ["sh", "-c", "uvicorn flowboard.main:app --host 0.0.0.0 --port ${FLOWBOARD_HTTP_PORT:-8101}"]
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8101/api/health')"
+
+CMD ["/app/entrypoint.sh"]
