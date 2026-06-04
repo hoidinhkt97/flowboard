@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import secrets
 import time
 import uuid
 from typing import Any, Optional
@@ -110,7 +109,6 @@ class FlowClient:
     def __init__(self) -> None:
         self._ws: Optional[Any] = None
         self._pending: dict[str, asyncio.Future] = {}
-        self._callback_secret: str = secrets.token_urlsafe(32)
 
         self._token_captured_at: Optional[float] = None
         self._flow_key_present: bool = False
@@ -144,10 +142,6 @@ class FlowClient:
     @property
     def connected(self) -> bool:
         return self._ws is not None
-
-    @property
-    def callback_secret(self) -> str:
-        return self._callback_secret
 
     def set_extension(self, ws: Any) -> None:
         self._ws = ws
@@ -352,7 +346,7 @@ class FlowClient:
         if not self.connected or self._ws is None:
             return False
         try:
-            await self._ws.send(json.dumps(message))
+            await self._ws.send_text(json.dumps(message))
             return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("notify failed: %s", exc)
@@ -370,7 +364,7 @@ class FlowClient:
         payload = {"id": req_id, "method": method, "params": params}
         t0 = time.monotonic()
         try:
-            await self._ws.send(json.dumps(payload))
+            await self._ws.send_text(json.dumps(payload))
             result = await asyncio.wait_for(fut, timeout=timeout or self.DEFAULT_TIMEOUT)
             rt_ms = int((time.monotonic() - t0) * 1000)
             status = result.get("status") if isinstance(result, dict) else None
@@ -483,8 +477,7 @@ class FlowClient:
         }
 
 
-flow_client = FlowClient()
-
-
 def get_flow_client() -> FlowClient:
-    return flow_client
+    raise RuntimeError(
+        "get_flow_client() is deprecated — resolve FlowClient from ConnectionRegistry instead"
+    )
