@@ -14,6 +14,22 @@ from flowboard.worker import processor as proc_module
 from flowboard.worker.processor import _handle_gen_image
 
 
+# ── fixtures ──────────────────────────────────────────────────────────────
+
+
+class _FakeFlowClient:
+    """Minimal stand-in for a FlowClient so registry.get() is non-None."""
+    pass
+
+
+@pytest.fixture
+def fake_registry(monkeypatch):
+    """Patch registry.get to return a fake client for the authenticated account."""
+    from flowboard.services import registry as reg_module
+    monkeypatch.setattr(reg_module.registry, "get", lambda account_id: _FakeFlowClient())
+    return _FakeFlowClient()
+
+
 # ── helpers ───────────────────────────────────────────────────────────────
 
 
@@ -60,16 +76,17 @@ def test_sniff_png_dimensions():
     assert dims == (1, 1)
 
 
-def test_upload_rejects_non_image_mime(client):
+def test_upload_rejects_non_image_mime(client, auth, fake_registry):
     r = client.post(
         "/api/upload",
         data={"project_id": "abcd1234"},
         files={"file": ("evil.txt", b"hello", "text/plain")},
+        headers=auth,
     )
     assert r.status_code == 415, r.text
 
 
-def test_upload_rejects_oversize(client, monkeypatch):
+def test_upload_rejects_oversize(client, auth, fake_registry, monkeypatch):
     # Cap to a tiny value so we don't have to send 10 MB in CI.
     from flowboard.routes import upload as upload_route
 
@@ -79,29 +96,32 @@ def test_upload_rejects_oversize(client, monkeypatch):
         "/api/upload",
         data={"project_id": "abcd1234"},
         files={"file": ("big.png", payload, "image/png")},
+        headers=auth,
     )
     assert r.status_code == 413, r.text
 
 
-def test_upload_rejects_invalid_project_id(client):
+def test_upload_rejects_invalid_project_id(client, auth):
     r = client.post(
         "/api/upload",
         data={"project_id": "../../etc/passwd"},
         files={"file": ("a.png", _png_bytes(), "image/png")},
+        headers=auth,
     )
     assert r.status_code == 400, r.text
 
 
-def test_upload_rejects_empty_file(client):
+def test_upload_rejects_empty_file(client, auth, fake_registry):
     r = client.post(
         "/api/upload",
         data={"project_id": "abcd1234"},
         files={"file": ("empty.png", b"", "image/png")},
+        headers=auth,
     )
     assert r.status_code == 400, r.text
 
 
-def test_upload_happy_path(client, monkeypatch):
+def test_upload_happy_path(client, auth, fake_registry, monkeypatch):
     """Stub the SDK upload, verify we cache bytes + persist Asset."""
     media_uuid = "11111111-2222-3333-4444-555555555555"
 
@@ -120,6 +140,7 @@ def test_upload_happy_path(client, monkeypatch):
         "/api/upload",
         data={"project_id": "abcd1234"},
         files={"file": ("char.png", payload, "image/png")},
+        headers=auth,
     )
     assert r.status_code == 200, r.text
     body = r.json()
@@ -142,7 +163,7 @@ def test_upload_happy_path(client, monkeypatch):
     assert status["available"] is True
 
 
-def test_upload_propagates_sdk_error(client, monkeypatch):
+def test_upload_propagates_sdk_error(client, auth, fake_registry, monkeypatch):
     async def stub_upload(self, **kwargs):
         return {"raw": None, "error": "captcha_failed"}
 
@@ -153,6 +174,7 @@ def test_upload_propagates_sdk_error(client, monkeypatch):
         "/api/upload",
         data={"project_id": "abcd1234"},
         files={"file": ("c.png", _png_bytes(), "image/png")},
+        headers=auth,
     )
     assert r.status_code == 502, r.text
 
@@ -160,33 +182,36 @@ def test_upload_propagates_sdk_error(client, monkeypatch):
 # ── /api/upload-url tests ─────────────────────────────────────────────────
 
 
-def test_upload_url_rejects_bad_scheme(client):
+def test_upload_url_rejects_bad_scheme(client, auth, fake_registry):
     r = client.post(
         "/api/upload-url",
         json={"url": "file:///etc/passwd", "project_id": "abcd1234"},
+        headers=auth,
     )
     assert r.status_code == 400, r.text
     assert "http" in r.json()["detail"]
 
 
-def test_upload_url_rejects_loopback(client):
+def test_upload_url_rejects_loopback(client, auth, fake_registry):
     r = client.post(
         "/api/upload-url",
         json={"url": "http://127.0.0.1/foo.png", "project_id": "abcd1234"},
+        headers=auth,
     )
     assert r.status_code == 400, r.text
     assert "public" in r.json()["detail"]
 
 
-def test_upload_url_rejects_invalid_project(client):
+def test_upload_url_rejects_invalid_project(client, auth):
     r = client.post(
         "/api/upload-url",
         json={"url": "https://example.com/a.png", "project_id": "../../etc"},
+        headers=auth,
     )
     assert r.status_code == 400, r.text
 
 
-def test_upload_url_happy_path(client, monkeypatch):
+def test_upload_url_happy_path(client, auth, fake_registry, monkeypatch):
     """Stub httpx and the SDK; verify the URL fetch piece composes correctly."""
     media_uuid = "abcdef00-1111-2222-3333-444444444444"
     payload = _png_bytes()
@@ -222,6 +247,7 @@ def test_upload_url_happy_path(client, monkeypatch):
     r = client.post(
         "/api/upload-url",
         json={"url": "https://example.com/a.png", "project_id": "abcd1234"},
+        headers=auth,
     )
     assert r.status_code == 200, r.text
     body = r.json()
@@ -230,7 +256,7 @@ def test_upload_url_happy_path(client, monkeypatch):
     assert body["size"] == len(payload)
 
 
-def test_upload_url_rejects_non_image_response(client, monkeypatch):
+def test_upload_url_rejects_non_image_response(client, auth, fake_registry, monkeypatch):
     """Server lies about content-type and returns HTML — magic bytes catch it."""
 
     class _Resp:
@@ -251,11 +277,12 @@ def test_upload_url_rejects_non_image_response(client, monkeypatch):
     r = client.post(
         "/api/upload-url",
         json={"url": "https://example.com/notreal.png", "project_id": "abcd1234"},
+        headers=auth,
     )
     assert r.status_code == 415, r.text
 
 
-def test_upload_url_uses_magic_bytes_when_content_type_missing(client, monkeypatch):
+def test_upload_url_uses_magic_bytes_when_content_type_missing(client, auth, fake_registry, monkeypatch):
     """Server omits Content-Type but body is a valid PNG — accept it."""
     media_uuid = "deadbeef-cafe-1234-5678-fedcba987654"
     payload = _png_bytes()
@@ -286,6 +313,7 @@ def test_upload_url_uses_magic_bytes_when_content_type_missing(client, monkeypat
     r = client.post(
         "/api/upload-url",
         json={"url": "https://example.com/x", "project_id": "abcd1234"},
+        headers=auth,
     )
     assert r.status_code == 200, r.text
     assert captured["mime"] == "image/png"

@@ -111,6 +111,7 @@ class Asset(SQLModel, table=True):
     # Flow tab).
     url: Optional[str] = None
     local_path: Optional[str] = None
+    s3_key: Optional[str] = None
     mime: Optional[str] = None
     created_at: datetime = Field(default_factory=_utcnow)
 
