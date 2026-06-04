@@ -19,6 +19,19 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 
+def _check_jwt_secret_length() -> None:
+    """Warn if JWT_SECRET is below RFC 7518's 32-byte minimum for HMAC-SHA256."""
+    from flowboard import config
+    secret_bytes = len((config.JWT_SECRET or "").encode("utf-8"))
+    if secret_bytes < 32:
+        logger.warning(
+            "FLOWBOARD_JWT_SECRET is %d bytes — RFC 7518 requires a minimum of 32 bytes "
+            "for HS256. Set FLOWBOARD_JWT_SECRET to a cryptographically random 32+ byte "
+            "string in production (e.g. openssl rand -hex 32).",
+            secret_bytes,
+        )
+
+
 def _recover_orphan_running_requests() -> int:
     """Mark any pre-existing 'running' requests as failed so a restart doesn't
     leave nodes polling a request that nobody is processing anymore."""
@@ -42,6 +55,7 @@ def _recover_orphan_running_requests() -> int:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    _check_jwt_secret_length()
     recovered = _recover_orphan_running_requests()
     if recovered:
         logger.info("recovered %d orphan running request(s) → failed", recovered)
