@@ -3,7 +3,7 @@
   "name": "Flowboard Bridge",
   "version": "0.0.5",
   "description": "Local bridge that proxies Flowboard agent requests to authenticated labs.google sessions.",
-  "permissions": ["storage", "alarms", "tabs", "webRequest", "scripting", "declarativeNetRequest"],
+  "permissions": ["storage", "alarms", "tabs", "webRequest", "scripting", "declarativeNetRequest", "cookies"],
   "host_permissions": [
     "https://aisandbox-pa.googleapis.com/*",
     "https://labs.google/*",
