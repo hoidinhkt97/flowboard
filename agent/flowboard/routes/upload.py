@@ -23,14 +23,16 @@ from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlmodel import select
 
 from flowboard.db import get_session
-from flowboard.db.models import Asset
+from flowboard.db.models import Account, Asset
+from flowboard.deps import get_current_account
 from flowboard.services import media as media_service
-from flowboard.services.flow_sdk import get_flow_sdk, is_valid_project_id
+from flowboard.services.flow_sdk import FlowSDK, get_flow_sdk, is_valid_project_id
+from flowboard.services.registry import registry
 
 logger = logging.getLogger(__name__)
 
@@ -180,10 +182,11 @@ async def _ingest_image_bytes(
     project_id: str,
     file_name: str,
     node_id: Optional[int],
+    sdk: FlowSDK,
 ) -> dict:
     """Push bytes to Flow's uploadImage, cache locally, upsert Asset row."""
     image_b64 = base64.b64encode(raw).decode("ascii")
-    resp = await get_flow_sdk().upload_image(
+    resp = await sdk.upload_image(
         image_base64=image_b64,
         mime_type=mime,
         project_id=project_id,
@@ -243,9 +246,13 @@ async def upload_image(
     project_id: str = Form(...),
     node_id: Optional[int] = Form(default=None),
     file: UploadFile = File(...),
+    acct: Account = Depends(get_current_account),
 ):
     if not is_valid_project_id(project_id):
         raise HTTPException(status_code=400, detail="invalid project_id")
+    fc = registry.get(acct.id)
+    if fc is None:
+        raise HTTPException(503, "extension_offline")
 
     mime = (file.content_type or "").lower().split(";")[0].strip()
     if mime not in ALLOWED_UPLOAD_MIMES:
@@ -267,7 +274,8 @@ async def upload_image(
         )
 
     file_name = file.filename or f"upload{_EXT_BY_MIME.get(mime, '')}"
-    out = await _ingest_image_bytes(raw, mime, project_id, file_name, node_id)
+    sdk = get_flow_sdk(client=fc)
+    out = await _ingest_image_bytes(raw, mime, project_id, file_name, node_id, sdk)
     logger.info("upload: media_id=%s size=%d mime=%s", out["media_id"], size, mime)
     return out
 
@@ -279,12 +287,19 @@ class UrlUploadBody(BaseModel):
 
 
 @router.post("/upload-url")
-async def upload_image_from_url(body: UrlUploadBody):
+async def upload_image_from_url(
+    body: UrlUploadBody,
+    acct: Account = Depends(get_current_account),
+):
     """Fetch an image at ``body.url`` server-side, validate, then push it
     through the same Flow upload pipeline as ``/upload``. CORS-free
     alternative to having the browser fetch the URL itself."""
     if not is_valid_project_id(body.project_id):
         raise HTTPException(status_code=400, detail="invalid project_id")
+    fc = registry.get(acct.id)
+    if fc is None:
+        raise HTTPException(503, "extension_offline")
+    sdk = get_flow_sdk(client=fc)
 
     parsed = urlparse(body.url)
     if parsed.scheme not in ("http", "https"):
@@ -337,7 +352,7 @@ async def upload_image_from_url(body: UrlUploadBody):
     if "." not in path_name:
         path_name = path_name + _EXT_BY_MIME.get(mime, "")
 
-    out = await _ingest_image_bytes(raw, mime, body.project_id, path_name, body.node_id)
+    out = await _ingest_image_bytes(raw, mime, body.project_id, path_name, body.node_id, sdk)
     logger.info(
         "upload-url: media_id=%s size=%d mime=%s host=%s",
         out["media_id"], size, mime, parsed.netloc,

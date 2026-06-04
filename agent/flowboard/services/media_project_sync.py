@@ -33,6 +33,7 @@ from sqlmodel import select
 from flowboard.db import get_session
 from flowboard.db.models import Asset, MediaProjectMapping
 from flowboard.services import media as media_service
+from flowboard.services.flow_client import FlowClient
 from flowboard.services.flow_sdk import get_flow_sdk
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ class MediaSyncError(RuntimeError):
 
 
 async def ensure_media_in_project(
-    original_media_id: str, project_id: str
+    original_media_id: str, project_id: str, fc: FlowClient
 ) -> str:
     """Return a media_id Flow recognises as a reference under
     ``project_id``. Re-uploads from the local cache on cache miss.
@@ -87,7 +88,7 @@ async def ensure_media_in_project(
     # 3) Upload to Flow under the target project.
     image_b64 = base64.b64encode(bytes_data).decode("ascii")
     file_name = f"sync_{original_media_id}.{_ext_from_mime(mime)}"
-    resp = await get_flow_sdk().upload_image(
+    resp = await get_flow_sdk(client=fc).upload_image(
         image_base64=image_b64,
         mime_type=mime,
         project_id=project_id,
@@ -140,7 +141,7 @@ async def ensure_media_in_project(
 
 
 async def ensure_media_ids_in_project(
-    media_ids: list[str], project_id: str
+    media_ids: list[str], project_id: str, fc: FlowClient
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Bulk-sync. Returns ``(synced_ids, failures)`` where ``failures``
     is a list of ``(original_media_id, error_message)`` tuples for any
@@ -150,7 +151,7 @@ async def ensure_media_ids_in_project(
     failures: list[tuple[str, str]] = []
     for mid in media_ids:
         try:
-            synced.append(await ensure_media_in_project(mid, project_id))
+            synced.append(await ensure_media_in_project(mid, project_id, fc))
         except MediaSyncError as exc:
             failures.append((mid, str(exc)))
             logger.warning(

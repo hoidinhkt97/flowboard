@@ -536,7 +536,7 @@ async def _handle_gen_video_omni(params: dict) -> tuple[dict, Optional[str]]:
     # syncs use the MediaProjectMapping cache and are free.
     try:
         synced_refs, sync_failures = await ensure_media_ids_in_project(
-            ref_media_ids, project_id
+            ref_media_ids, project_id, fc
         )
     except MediaSyncError as exc:
         return {}, f"sync_failed: {exc}"[:200]
