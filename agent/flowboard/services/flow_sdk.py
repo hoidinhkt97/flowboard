@@ -1344,7 +1344,16 @@ def extract_media_entries(resp: Any) -> list[dict[str, Any]]:
 _sdk: Optional[FlowSDK] = None
 
 
-def get_flow_sdk() -> FlowSDK:
+def get_flow_sdk(client: Optional[FlowClient] = None) -> FlowSDK:
+    """Return a FlowSDK instance.
+
+    When `client` is provided (processor handlers pass the per-account
+    FlowClient from the registry), returns a fresh instance bound to it.
+    When omitted, falls back to the module-level singleton — used by
+    routes that don't yet have per-account context (cleaned up in Task 6).
+    """
+    if client is not None:
+        return FlowSDK(client=client)
     global _sdk
     if _sdk is None:
         _sdk = FlowSDK()
