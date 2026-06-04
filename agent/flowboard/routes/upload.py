@@ -183,6 +183,7 @@ async def _ingest_image_bytes(
     file_name: str,
     node_id: Optional[int],
     sdk: FlowSDK,
+    account_id: Optional[int] = None,
 ) -> dict:
     """Push bytes to Flow's uploadImage, cache locally, upsert Asset row."""
     image_b64 = base64.b64encode(raw).decode("ascii")
@@ -212,6 +213,19 @@ async def _ingest_image_bytes(
     except OSError as exc:
         logger.error("failed to write upload cache %s: %s", cache_path, exc)
         raise HTTPException(status_code=500, detail="failed to cache upload")
+
+    # Upload to S3 when configured
+    s3_key: Optional[str] = None
+    if account_id is not None:
+        from flowboard.services import object_storage
+        if object_storage.is_configured():
+            key = object_storage.s3_key_for(account_id, media_id, ext)
+            try:
+                await object_storage.upload_bytes(key, raw, mime)
+                s3_key = key
+            except Exception as exc:  # noqa: BLE001
+                logger.error("s3 upload failed for upload %s: %s", media_id, exc)
+
     with get_session() as s:
         row = s.exec(
             select(Asset).where(Asset.uuid_media_id == media_id)
@@ -223,12 +237,18 @@ async def _ingest_image_bytes(
                 local_path=str(cache_path),
                 mime=mime,
                 node_id=node_id,
+                account_id=account_id,
+                s3_key=s3_key,
             )
         else:
             row.local_path = str(cache_path)
             row.mime = mime
             if node_id is not None and row.node_id is None:
                 row.node_id = node_id
+            if account_id is not None and row.account_id is None:
+                row.account_id = account_id
+            if s3_key is not None:
+                row.s3_key = s3_key
         s.add(row)
         s.commit()
     out: dict = {"media_id": media_id, "mime": mime, "size": len(raw)}
@@ -275,7 +295,7 @@ async def upload_image(
 
     file_name = file.filename or f"upload{_EXT_BY_MIME.get(mime, '')}"
     sdk = get_flow_sdk(client=fc)
-    out = await _ingest_image_bytes(raw, mime, project_id, file_name, node_id, sdk)
+    out = await _ingest_image_bytes(raw, mime, project_id, file_name, node_id, sdk, account_id=acct.id)
     logger.info("upload: media_id=%s size=%d mime=%s", out["media_id"], size, mime)
     return out
 
@@ -352,7 +372,7 @@ async def upload_image_from_url(
     if "." not in path_name:
         path_name = path_name + _EXT_BY_MIME.get(mime, "")
 
-    out = await _ingest_image_bytes(raw, mime, body.project_id, path_name, body.node_id, sdk)
+    out = await _ingest_image_bytes(raw, mime, body.project_id, path_name, body.node_id, sdk, account_id=acct.id)
     logger.info(
         "upload-url: media_id=%s size=%d mime=%s host=%s",
         out["media_id"], size, mime, parsed.netloc,
