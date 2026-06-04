@@ -8,10 +8,16 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
+from sqlmodel import select
 
+from flowboard.db import get_session
+from flowboard.db.models import Account, Asset
+from flowboard.deps import get_current_account
 from flowboard.services import media as media_service
+from flowboard.services import object_storage
+from flowboard.services.media import is_valid_media_id
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +56,36 @@ def get_media_status(media_id: str):
             content={"available": False, "has_url": False, "reason": "invalid_id"},
         )
     return media_service.status(media_id)
+
+
+@api_router.get("/{media_id}/url")
+async def get_media_url(
+    media_id: str,
+    acct: Account = Depends(get_current_account),
+):
+    """Return a URL to access this media asset.
+
+    Returns a presigned S3 GET URL when S3 is configured, otherwise
+    the local /media/:id serve path. Always verifies account ownership."""
+    if not is_valid_media_id(media_id):
+        raise HTTPException(status_code=404, detail="not found")
+
+    with get_session() as s:
+        asset = s.exec(
+            select(Asset).where(
+                Asset.uuid_media_id == media_id,
+                Asset.account_id == acct.id,
+            )
+        ).first()
+
+    if asset is None:
+        raise HTTPException(status_code=404, detail="not found")
+
+    if asset.s3_key and object_storage.is_configured():
+        url = await object_storage.presigned_get_url(asset.s3_key, expires=300)
+        return {"url": url, "expires_in": 300}
+
+    return {"url": f"/media/{media_id}", "expires_in": None}
 
 
 @api_router.get("/_debug/assets")
