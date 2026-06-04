@@ -493,7 +493,9 @@ export async function uploadImage(
   form.append("file", file);
 
   // Don't set Content-Type — the browser sets it with the correct boundary.
-  const res = await fetch("/api/upload", { method: "POST", body: form });
+  const headers: Record<string, string> = {};
+  if (_authToken) headers["Authorization"] = `Bearer ${_authToken}`;
+  const res = await fetch("/api/upload", { method: "POST", body: form, headers });
   if (!res.ok) {
     throw new Error(await extractErrorMessage(res));
   }
@@ -565,7 +567,10 @@ export async function uploadImageFromUrl(
 ): Promise<UploadResponse> {
   const res = await fetch("/api/upload-url", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(_authToken ? { "Authorization": `Bearer ${_authToken}` } : {}),
+    },
     body: JSON.stringify({ url, project_id: projectId, node_id: nodeId }),
   });
   if (!res.ok) {
