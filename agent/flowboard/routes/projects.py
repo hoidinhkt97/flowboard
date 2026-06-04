@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from flowboard.db import get_session
-from flowboard.db.models import Board, BoardFlowProject
+from flowboard.db.models import Account, Board, BoardFlowProject
+from flowboard.deps import get_current_account
 from flowboard.services.flow_sdk import get_flow_sdk, is_valid_project_id
+from flowboard.services.registry import registry
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,10 @@ def get_board_project(board_id: int):
 
 
 @router.post("/{board_id}/project")
-async def ensure_board_project(board_id: int):
+async def ensure_board_project(
+    board_id: int,
+    acct: Account = Depends(get_current_account),
+):
     # Cheap path: DB hit only.
     with get_session() as s:
         board = s.get(Board, board_id)
@@ -42,8 +47,12 @@ async def ensure_board_project(board_id: int):
             return {"flow_project_id": row.flow_project_id, "created": False}
         board_name = board.name
 
+    fc = registry.get(acct.id)
+    if fc is None:
+        raise HTTPException(503, "extension_offline")
+
     # Release the session before the extension round-trip.
-    resp = await get_flow_sdk().create_project(title=board_name or "Untitled")
+    resp = await get_flow_sdk(client=fc).create_project(title=board_name or "Untitled")
     if resp.get("error"):
         # Surface the extension/TRPC error cleanly to the caller.
         raise HTTPException(
