@@ -5,7 +5,7 @@
  * Captures Bearer token and proxies API calls through the browser context.
  */
 
-const APP_ORIGIN   = 'http://localhost:8101';
+const APP_ORIGIN   = '__APP_ORIGIN__';
 const PAIR_URL     = APP_ORIGIN + '/api/extension/pair';
 const CALLBACK_URL = APP_ORIGIN + '/api/ext/callback';
 
@@ -99,7 +99,7 @@ async function init() {
 
 async function pairWithServer() {
   try {
-    const cookie = await chrome.cookies.get({ url: APP_ORIGIN, name: 'fb_refresh' });
+    const cookie = await chrome.cookies.get({ url: APP_ORIGIN + '/api/account/login', name: 'fb_refresh' });
     if (!cookie) return null;
     const resp = await fetch(PAIR_URL, { method: 'POST', credentials: 'include' });
     if (!resp.ok) return null;
