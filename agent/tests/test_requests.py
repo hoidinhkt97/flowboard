@@ -308,7 +308,7 @@ async def test_worker_gen_video_happy_path(client, monkeypatch):
                 ],
             }
 
-    monkeypatch.setattr(proc, "get_flow_sdk", lambda: _StubSdk())
+    monkeypatch.setattr(proc, "get_flow_sdk", lambda fc=None: _StubSdk())
 
     row = client.post(
         "/api/requests",
@@ -357,7 +357,7 @@ async def test_worker_gen_video_times_out(client, monkeypatch):
                 "operations": [{"name": "op-never", "done": False, "media_entries": []}],
             }
 
-    monkeypatch.setattr(proc, "get_flow_sdk", lambda: _StubSdk())
+    monkeypatch.setattr(proc, "get_flow_sdk", lambda fc=None: _StubSdk())
 
     row = client.post(
         "/api/requests",
@@ -418,7 +418,7 @@ async def test_worker_gen_video_bails_on_per_op_error(client, monkeypatch):
                 ],
             }
 
-    monkeypatch.setattr(proc, "get_flow_sdk", lambda: _StubSdk())
+    monkeypatch.setattr(proc, "get_flow_sdk", lambda fc=None: _StubSdk())
 
     row = client.post(
         "/api/requests",
@@ -511,7 +511,7 @@ async def test_worker_gen_video_partial_batch_keeps_succeeded(
                 ],
             }
 
-    monkeypatch.setattr(proc, "get_flow_sdk", lambda: _StubSdk())
+    monkeypatch.setattr(proc, "get_flow_sdk", lambda fc=None: _StubSdk())
 
     row = client.post(
         "/api/requests",
@@ -587,7 +587,7 @@ async def test_worker_gen_video_dedupes_repeat_entries_across_polls(
                 })
             return {"raw": {}, "operations": ops}
 
-    monkeypatch.setattr(proc, "get_flow_sdk", lambda: _StubSdk())
+    monkeypatch.setattr(proc, "get_flow_sdk", lambda fc=None: _StubSdk())
 
     row = client.post(
         "/api/requests",
@@ -643,7 +643,7 @@ async def test_cancel_running_video_bails_poll_and_keeps_canceled_status(
                 ],
             }
 
-    monkeypatch.setattr(proc, "get_flow_sdk", lambda: _StubSdk())
+    monkeypatch.setattr(proc, "get_flow_sdk", lambda fc=None: _StubSdk())
 
     row = client.post(
         "/api/requests",
@@ -840,7 +840,7 @@ async def test_worker_gen_video_omni_happy_path(client, monkeypatch):
                 ],
             }
 
-    monkeypatch.setattr(proc, "get_flow_sdk", lambda: _StubSdk())
+    monkeypatch.setattr(proc, "get_flow_sdk", lambda fc=None: _StubSdk())
 
     row = client.post(
         "/api/requests",
@@ -884,7 +884,7 @@ async def test_worker_gen_video_omni_rejects_invalid_duration(client, monkeypatc
         async def gen_video_omni(self, **kwargs):
             raise AssertionError("must not dispatch with invalid duration")
 
-    monkeypatch.setattr(proc, "get_flow_sdk", lambda: _StubSdk())
+    monkeypatch.setattr(proc, "get_flow_sdk", lambda fc=None: _StubSdk())
 
     out, err = await proc._handle_gen_video_omni(
         {

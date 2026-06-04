@@ -39,11 +39,28 @@ def _seed_default_paygate_tier():
     the no-tier path (e.g. test_processor_tier_fallback.py) reset the cache
     in their own module-local autouse fixture, which runs after this one and
     wins.
+
+    Phase 2 (registry dispatch): the worker now resolves FlowClient from
+    the ConnectionRegistry instead of the global singleton. Seed a
+    FlowClient for account_id=1 (the fixture account always gets id=1 in a
+    fresh DB) so worker-level integration tests don't have to opt in.
     """
-    from flowboard.services.flow_client import flow_client
+    from unittest.mock import MagicMock
+    from flowboard.services.flow_client import FlowClient, flow_client
+    from flowboard.services.registry import registry
+
     flow_client._paygate_tier = "PAYGATE_TIER_ONE"
+
+    fc = FlowClient()
+    fc._paygate_tier = "PAYGATE_TIER_ONE"
+    fake_ws = MagicMock()
+    fc.set_extension(fake_ws)
+    registry._conns[1] = (fc, fake_ws)
+
     yield
+
     flow_client._paygate_tier = None
+    registry._conns.pop(1, None)
 
 
 @pytest.fixture

@@ -17,8 +17,9 @@ from typing import Any, Awaitable, Callable, Optional
 from flowboard.db import get_session
 from flowboard.db.models import Request
 from flowboard.services import media as media_service
-from flowboard.services.flow_client import flow_client
+from flowboard.services.flow_client import FlowClient, flow_client as _global_fc
 from flowboard.services.flow_sdk import get_flow_sdk
+from flowboard.services.registry import registry
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,9 @@ _ALLOWED_URL_PREFIXES: tuple[str, ...] = (
 
 
 async def _handle_proxy(params: dict) -> tuple[dict, Optional[str]]:
+    fc: Optional[FlowClient] = params.get("__fc")
+    if fc is None:
+        return {}, "extension_offline"
     url = params.get("url")
     method = params.get("method", "POST")
     if not isinstance(url, str) or not url:
@@ -41,7 +45,7 @@ async def _handle_proxy(params: dict) -> tuple[dict, Optional[str]]:
     # even if the extension's own check was somehow bypassed.
     if not any(url.startswith(p) for p in _ALLOWED_URL_PREFIXES):
         return {}, "url_not_allowed"
-    resp = await flow_client.api_request(
+    resp = await fc.api_request(
         url=url,
         method=method,
         headers=params.get("headers") or {},
@@ -58,11 +62,12 @@ async def _handle_proxy(params: dict) -> tuple[dict, Optional[str]]:
 
 
 async def _handle_create_project(params: dict) -> tuple[dict, Optional[str]]:
+    fc: Optional[FlowClient] = params.get("__fc")
     name = params.get("name") or params.get("title") or "Untitled"
     if not isinstance(name, str) or not name.strip():
         return {}, "missing_name"
     tool = params.get("tool", "PINHOLE")
-    resp = await get_flow_sdk().create_project(name.strip(), tool)
+    resp = await get_flow_sdk(fc).create_project(name.strip(), tool)
     if resp.get("error"):
         return resp, str(resp["error"])
     return resp, None
@@ -71,6 +76,7 @@ async def _handle_create_project(params: dict) -> tuple[dict, Optional[str]]:
 async def _handle_gen_image(params: dict) -> tuple[dict, Optional[str]]:
     from flowboard.services.flow_sdk import is_valid_project_id
 
+    fc: Optional[FlowClient] = params.get("__fc")
     prompt = params.get("prompt")
     project_id = params.get("project_id")
     if not isinstance(prompt, str) or not prompt.strip():
@@ -89,7 +95,7 @@ async def _handle_gen_image(params: dict) -> tuple[dict, Optional[str]]:
     # users to Pro and stamped the wrong tier into request.params, which
     # then fed back through `_last_observed_paygate_tier_from_db()` and
     # corrupted /api/auth/me responses for the rest of the session.
-    tier = params.get("paygate_tier") or flow_client.paygate_tier
+    tier = params.get("paygate_tier") or (fc.paygate_tier if fc else _global_fc.paygate_tier)
     if tier is None:
         return {}, "paygate_tier_unknown"
     # `ref_media_ids` is the broader name (any upstream image / character /
@@ -117,7 +123,7 @@ async def _handle_gen_image(params: dict) -> tuple[dict, Optional[str]]:
     image_model = params.get("image_model")
     if not isinstance(image_model, str) or not image_model.strip():
         image_model = None
-    resp = await get_flow_sdk().gen_image(
+    resp = await get_flow_sdk(fc).gen_image(
         prompt=prompt.strip(),
         project_id=project_id,
         aspect_ratio=aspect,
@@ -172,6 +178,7 @@ def _is_request_canceled(rid: Optional[int]) -> bool:
 async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
     from flowboard.services.flow_sdk import is_valid_project_id
 
+    fc: Optional[FlowClient] = params.get("__fc")
     prompt = params.get("prompt")
     project_id = params.get("project_id")
     start_media_id = params.get("start_media_id") or params.get("startMediaId")
@@ -197,14 +204,14 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
     # Tier resolution — see the matching block in _handle_gen_image for
     # the rationale. No silent default; missing tier is a hard error so
     # we never dispatch an Ultra user's video at the Pro checkpoint.
-    tier = params.get("paygate_tier") or flow_client.paygate_tier
+    tier = params.get("paygate_tier") or (fc.paygate_tier if fc else _global_fc.paygate_tier)
     if tier is None:
         return {}, "paygate_tier_unknown"
     video_quality = params.get("video_quality")
     if not isinstance(video_quality, str) or not video_quality.strip():
         video_quality = None
 
-    sdk = get_flow_sdk()
+    sdk = get_flow_sdk(fc)
     dispatch = await sdk.gen_video(
         prompt=prompt.strip(),
         project_id=project_id,
@@ -422,6 +429,7 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
 async def _handle_edit_image(params: dict) -> tuple[dict, Optional[str]]:
     from flowboard.services.flow_sdk import is_valid_project_id
 
+    fc: Optional[FlowClient] = params.get("__fc")
     prompt = params.get("prompt")
     project_id = params.get("project_id")
     source_media_id = params.get("source_media_id") or params.get("sourceMediaId")
@@ -437,7 +445,7 @@ async def _handle_edit_image(params: dict) -> tuple[dict, Optional[str]]:
     aspect = params.get("aspect_ratio") or "IMAGE_ASPECT_RATIO_LANDSCAPE"
     # Tier resolution — see _handle_gen_image for rationale. Fail loud,
     # no silent fallback to Pro.
-    tier = params.get("paygate_tier") or flow_client.paygate_tier
+    tier = params.get("paygate_tier") or (fc.paygate_tier if fc else _global_fc.paygate_tier)
     if tier is None:
         return {}, "paygate_tier_unknown"
     raw_refs = params.get("ref_media_ids")
@@ -449,7 +457,7 @@ async def _handle_edit_image(params: dict) -> tuple[dict, Optional[str]]:
     if not isinstance(image_model, str) or not image_model.strip():
         image_model = None
 
-    resp = await get_flow_sdk().edit_image(
+    resp = await get_flow_sdk(fc).edit_image(
         prompt=prompt.strip(),
         project_id=project_id,
         source_media_id=source_media_id.strip(),
@@ -486,6 +494,7 @@ async def _handle_gen_video_omni(params: dict) -> tuple[dict, Optional[str]]:
         ensure_media_ids_in_project,
     )
 
+    fc: Optional[FlowClient] = params.get("__fc")
     prompt = params.get("prompt")
     project_id = params.get("project_id")
     raw_refs = params.get("ref_media_ids")
@@ -513,7 +522,7 @@ async def _handle_gen_video_omni(params: dict) -> tuple[dict, Optional[str]]:
     if not isinstance(duration_s, int) or duration_s not in (4, 6, 8, 10):
         return {}, "invalid_duration_s"
     aspect = params.get("aspect_ratio") or "VIDEO_ASPECT_RATIO_PORTRAIT"
-    tier = params.get("paygate_tier") or flow_client.paygate_tier
+    tier = params.get("paygate_tier") or (fc.paygate_tier if fc else _global_fc.paygate_tier)
     if tier is None:
         return {}, "paygate_tier_unknown"
 
@@ -545,7 +554,7 @@ async def _handle_gen_video_omni(params: dict) -> tuple[dict, Optional[str]]:
             len(sync_failures), len(synced_refs),
         )
 
-    sdk = get_flow_sdk()
+    sdk = get_flow_sdk(fc)
     dispatch = await sdk.gen_video_omni(
         prompt=prompt.strip(),
         project_id=project_id,
@@ -697,6 +706,8 @@ async def _handle_gen_video_omni(params: dict) -> tuple[dict, Optional[str]]:
     )
 
 
+_EXTENSION_TYPES = frozenset({"proxy", "gen_image", "gen_video", "gen_video_omni", "edit_image", "upload_image"})
+
 _DEFAULT_HANDLERS: dict[str, Handler] = {
     "proxy": _handle_proxy,
     "create_project": _handle_create_project,
@@ -791,6 +802,18 @@ class WorkerController:
                 # Long-running handlers re-check this rid between polls
                 # to honor user-initiated cancels.
                 params["__request_id"] = rid
+
+                if req.account_id is not None:
+                    fc = registry.get(req.account_id)
+                    if fc is None and req.type in _EXTENSION_TYPES:
+                        req.status = "failed"
+                        req.error = "extension_offline"
+                        req.finished_at = datetime.now(timezone.utc)
+                        s.add(req)
+                        s.commit()
+                        return
+                    if fc is not None:
+                        params["__fc"] = fc
 
             # Release the session during the possibly-long RPC.
             result, err = await handler(params)
