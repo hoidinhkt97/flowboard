@@ -23,4 +23,11 @@ PLANNER_MODEL = os.getenv("FLOWBOARD_PLANNER_MODEL", "claude-sonnet-4-6")
 # otherwise mock. Default auto.
 PLANNER_BACKEND = os.getenv("FLOWBOARD_PLANNER_BACKEND", "auto")
 
+# S3-compatible object storage (optional — omit to keep using local disk)
+S3_ENDPOINT   = os.getenv("FLOWBOARD_S3_ENDPOINT")    # e.g. https://s3.amazonaws.com or MinIO URL
+S3_BUCKET     = os.getenv("FLOWBOARD_S3_BUCKET")      # bucket name; must be set to enable S3
+S3_ACCESS_KEY = os.getenv("FLOWBOARD_S3_ACCESS_KEY")
+S3_SECRET_KEY = os.getenv("FLOWBOARD_S3_SECRET_KEY")
+S3_REGION     = os.getenv("FLOWBOARD_S3_REGION", "auto")
+
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
