@@ -8,7 +8,7 @@ from sqlmodel import select as _select_dt
 
 from flowboard.db import get_session, init_db
 from flowboard.db.models import DeviceToken, Request
-from flowboard.routes import account_auth, activity, auth, boards, chat, edges, ext_ws, extension, flow_projects, llm, media, nodes, plans, projects, prompt, upload, vision
+from flowboard.routes import account_auth, account_settings, activity, auth, boards, chat, edges, ext_ws, extension, flow_projects, llm, media, nodes, plans, projects, prompt, upload, vision
 from flowboard.routes import references as references_route
 from flowboard.routes import requests as requests_route
 from flowboard.services.registry import registry
@@ -87,6 +87,7 @@ app.include_router(vision.router)
 app.include_router(prompt.router)
 app.include_router(auth.router)
 app.include_router(account_auth.router)
+app.include_router(account_settings.router)
 app.include_router(extension.router)
 app.include_router(ext_ws.router)
 app.include_router(llm.router)
