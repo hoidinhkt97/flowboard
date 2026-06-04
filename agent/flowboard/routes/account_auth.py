@@ -68,7 +68,7 @@ def login(body: LoginBody, response: Response):
         httponly=True,
         samesite="lax",
         max_age=REFRESH_TOKEN_TTL_DAYS * 24 * 3600,
-        path="/api/account",
+        path="/api",
     )
     return {"access_token": access, "token_type": "bearer"}
 
@@ -110,7 +110,7 @@ def logout(response: Response, fb_refresh: str | None = Cookie(default=None)):
                     d.revoked_at = now
                     s.add(d)
                 s.commit()
-    response.delete_cookie("fb_refresh", path="/api/account")
+    response.delete_cookie("fb_refresh", path="/api")
     return {"ok": True}
 
 
