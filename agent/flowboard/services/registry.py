@@ -16,6 +16,13 @@ logger = logging.getLogger(__name__)
 _CLOSE_REPLACED = 4408
 
 
+async def _close_evicted(ws: Any, account_id: int) -> None:
+    try:
+        await ws.close(code=_CLOSE_REPLACED, reason="replaced")
+    except Exception:
+        logger.debug("registry: evict close failed for account %d (already closed)", account_id)
+
+
 class ConnectionRegistry:
     def __init__(self) -> None:
         self._conns: dict[int, tuple[FlowClient, Any]] = {}  # account_id → (fc, ws)
@@ -26,15 +33,10 @@ class ConnectionRegistry:
         existing = self._conns.get(account_id)
         if existing is not None:
             old_fc, old_ws = existing
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-            if loop is not None:
-                asyncio.create_task(
-                    old_ws.close(code=_CLOSE_REPLACED, reason="replaced"),
-                    name=f"evict-{account_id}",
-                )
+            asyncio.create_task(
+                _close_evicted(old_ws, account_id),
+                name=f"evict-{account_id}",
+            )
             old_fc.clear_extension()
 
         fc = FlowClient()

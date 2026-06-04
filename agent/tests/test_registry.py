@@ -48,7 +48,8 @@ def test_is_online_false_after_unregister():
     assert reg.is_online(1) is False
 
 
-def test_unregister_wrong_ws_does_not_remove():
+@pytest.mark.asyncio
+async def test_unregister_wrong_ws_does_not_remove():
     """Stale unregister (old ws after reconnect) must not evict the new one."""
     reg = ConnectionRegistry()
     old_ws = _fake_ws()
@@ -56,6 +57,10 @@ def test_unregister_wrong_ws_does_not_remove():
     reg.register(1, old_ws)
     reg.register(1, new_ws)    # last-wins
     reg.unregister(1, old_ws)  # stale — should be no-op
+    # Drain eviction task so it doesn't leak
+    pending = asyncio.all_tasks() - {asyncio.current_task()}
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
     assert reg.is_online(1) is True
 
 
@@ -67,5 +72,8 @@ async def test_last_wins_closes_old_connection():
     new_ws = _fake_ws()
     reg.register(1, old_ws)
     reg.register(1, new_ws)
-    await asyncio.sleep(0)   # let the close task fire
+    # Drain all pending tasks (the eviction task) completely
+    pending = asyncio.all_tasks() - {asyncio.current_task()}
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
     old_ws.close.assert_awaited_once_with(code=4408, reason="replaced")
