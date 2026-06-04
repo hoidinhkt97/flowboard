@@ -58,6 +58,7 @@ interface SettingsState {
   setVideoQuality(q: VideoQuality): void;
   setVideoModel(m: VideoModelFamily): void;
   setOmniFlashDuration(d: OmniFlashDuration): void;
+  applyTierDefault(tier: string): void;
 }
 
 const STORAGE_KEY = "flowboard.settings.v1";
@@ -135,5 +136,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       videoModel: get().videoModel,
       omniFlashDuration: d,
     });
+  },
+  applyTierDefault(tier) {
+    // Called once when the paygate tier is first resolved after login.
+    // Only takes effect when the user has never explicitly saved a quality
+    // preference — i.e., localStorage has no videoQuality entry. Does NOT
+    // persist so the default is re-evaluated each session from the live tier.
+    const raw = loadPersisted();
+    if (raw.videoQuality === undefined) {
+      set({ videoQuality: tier === "PAYGATE_TIER_TWO" ? "lite_relaxed" : "fast" });
+    }
   },
 }));

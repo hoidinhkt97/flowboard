@@ -6,6 +6,7 @@ import {
   type AuthMe,
 } from "../api/client";
 import { useGenerationStore } from "../store/generation";
+import { useSettingsStore } from "../store/settings";
 import { getLatestRelease, isNewerVersion, type LatestRelease } from "../api/github";
 import { SettingsPanel } from "./SettingsPanel";
 import packageJson from "../../package.json";
@@ -58,6 +59,7 @@ export function AccountPanel({ collapsed = false }: { collapsed?: boolean }) {
       // otherwise dispatch would happily reuse a stale tier.
       if (me?.paygate_tier) {
         setStorePaygateTier({ paygateTier: me.paygate_tier });
+        useSettingsStore.getState().applyTierDefault(me.paygate_tier);
         setPollsWithoutTier(0);
       } else if (me?.email) {
         // Email present but tier missing — extension connected but
